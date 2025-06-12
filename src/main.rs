@@ -251,11 +251,22 @@ enum CellType {
 
 struct FlipFluid {
     density: f32,
+
+    /// the number of cells in the x direction
     fNumX: f32,
+
+    /// the number of cells in the y direction
     fNumY: f32,
+
+    /// the largest distance between 2 adjacent cells
     h: f32,
+
+    /// the inverse of the largest distance between 2 adjacent cells (1.0/h)
     fInvSpacing: f32,
+
+    /// the number of total cells
     fNumCells: f32,
+
 
     u: Vec<f32, 30>,
     v: Vec<f32, 30>,
@@ -268,11 +279,20 @@ struct FlipFluid {
     cellType: Vec<CellType, 30>,
     cellColor: Vec<f32, 90>,
 
+    /// the max number of particles, used to size the arrays
     maxParticles: i32,
+
+    
+    /// the particle position, in meters, indexes 2*i are vertical, 2*i+1 are horizontal
     particlePos: Vec<f32, 64>,
+
+    /// the particle color, in groups of 3 for RGB
     particleColor: Vec<f32, 96>,
 
+    /// the particle velocity, in m/s, indexes 2*i are vertical, 2*i+1 are horizontal
     particleVel: Vec<f32, 64>,
+
+
     particleDensity: Vec<f32, 32>,
     particleRestDensity: f32,
     particleRadius: f32,
@@ -286,6 +306,7 @@ struct FlipFluid {
     firstCellParticle: Vec<i32, 32>,
     cellParticleIds: Vec<i32, 31>,
 
+    /// the total number of particles in the system
     numParticles: i32,
 }
 
@@ -403,6 +424,17 @@ impl FlipFluid {
         }
     }
     // integrateParticles(dt, gravity)
+    /// add gravity to the velocity of the particles and calculate positions.
+    /// 
+    /// for velocity (vertical only): Vert_Vel_new = Vert_Vel_old + dt * acceleration
+    /// 
+    /// vertical velocity is unchanged here Horiz_Vel_New = Horiz_Vel_Old
+    /// 
+    /// the position of each is then calculated
+    /// 
+    /// Vert_Pos_new = Vert_Pos_old + Vert_Vel_New * dt
+    /// 
+    /// Horiz_Pos_new = Horz_Pos_old + Horiz_Vel_New * dt
     fn integrateParticles(&mut self, dt: f32, gravity: f32) {
         // for (var i = 0; i < this.numParticles; i++) {
         for i in 0..self.numParticles {
@@ -411,9 +443,11 @@ impl FlipFluid {
             // this.particlePos[2 * i] += this.particleVel[2 * i] * dt;
             self.particlePos[(2 * i) as usize] += self.particleVel[(2 * i) as usize] * dt;
             // this.particlePos[2 * i + 1] += this.particleVel[2 * i + 1] * dt;
+            self.particlePos[(2 * i + 1) as usize] += self.particleVel[(2 * i + 1) as usize] * dt;
         }
     }
     // pushParticlesApart(numIters)
+    /// store the particle positions in x and y and 
     fn pushParticlesApart(&mut self, numIters: i32) {
         // var colorDiffusionCoeff = 0.001;
         let colorDiffusionCoeff: f32 = 0.001;
@@ -426,7 +460,7 @@ impl FlipFluid {
             // var x = this.particlePos[2 * i];
             let x: f32 = self.particlePos[(2 * i) as usize];
             // var y = this.particlePos[2 * i + 1];
-            let y: f32 = self.particlePos[(2 * i) as usize];
+            let y: f32 = self.particlePos[(2 * i + 1) as usize];
 
             // var xi = clamp(Math.floor(x * this.pInvSpacing), 0, this.pNumX - 1);
             let xi = clamp(floorf(x * self.pInvSpacing) as i32, 0, self.pNumX - 1);
