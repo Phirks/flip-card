@@ -267,7 +267,6 @@ struct FlipFluid {
     /// the number of total cells
     fNumCells: f32,
 
-
     u: Vec<f32, 30>,
     v: Vec<f32, 30>,
     du: Vec<f32, 30>,
@@ -282,7 +281,6 @@ struct FlipFluid {
     /// the max number of particles, used to size the arrays
     maxParticles: i32,
 
-    
     /// the particle position, in meters, indexes 2*i are vertical, 2*i+1 are horizontal
     particlePos: Vec<f32, 64>,
 
@@ -291,7 +289,6 @@ struct FlipFluid {
 
     /// the particle velocity, in m/s, indexes 2*i are vertical, 2*i+1 are horizontal
     particleVel: Vec<f32, 64>,
-
 
     particleDensity: Vec<f32, 32>,
     particleRestDensity: f32,
@@ -425,15 +422,15 @@ impl FlipFluid {
     }
     // integrateParticles(dt, gravity)
     /// add gravity to the velocity of the particles and calculate positions.
-    /// 
+    ///
     /// for velocity (vertical only): Vert_Vel_new = Vert_Vel_old + dt * acceleration
-    /// 
+    ///
     /// vertical velocity is unchanged here Horiz_Vel_New = Horiz_Vel_Old
-    /// 
+    ///
     /// the position of each is then calculated
-    /// 
+    ///
     /// Vert_Pos_new = Vert_Pos_old + Vert_Vel_New * dt
-    /// 
+    ///
     /// Horiz_Pos_new = Horz_Pos_old + Horiz_Vel_New * dt
     fn integrateParticles(&mut self, dt: f32, gravity: f32) {
         // for (var i = 0; i < this.numParticles; i++) {
@@ -447,7 +444,7 @@ impl FlipFluid {
         }
     }
     // pushParticlesApart(numIters)
-    /// store the particle positions in x and y and 
+    /// store the particle positions in x and y and
     fn pushParticlesApart(&mut self, numIters: i32) {
         // var colorDiffusionCoeff = 0.001;
         let colorDiffusionCoeff: f32 = 0.001;
@@ -1430,62 +1427,57 @@ struct Scene {
 }
 
 impl Scene {
-    fn new() -> Scene {
-        Scene {
-            // gravity : -9.81,
-            gravity: -9.81,
-            // // gravity : 0.0,
-            // dt : 1.0 / 120.0,
-            dt: 1.0 / 120.0,
-            // flipRatio : 0.9,
-            flipRatio: 0.9,
-            // numPressureIters : 100,
-            numPressureIters: 100,
-            // numParticleIters : 2,
-            numParticleIters: 2,
-            // frameNr : 0,
-            frameNr: 0,
-            // overRelaxation : 1.9,
-            overRelaxation: 1.9,
-            // compensateDrift : true,
-            compensateDrift: true,
-            // separateParticles : true,
-            separateParticles: true,
-            // obstacleX : 0.0,
-            obstacleX: 0.0,
-            // obstacleY : 0.0,
-            obstacleY: 0.0,
-            // obstacleRadius: 0.15,
-            obstacleRadius: 0.15,
-            // paused: true,
-            paused: true,
-            // showObstacle: true,
-            showObstacle: true,
-            // obstacleVelX: 0.0,
-            obstacleVelX: 0.0,
-            // obstacleVelY: 0.0,
-            obstacleVelY: 0.0,
-            // showParticles: true,
-            showParticles: true,
-            // showGrid: false,
-            showGrid: false,
-            // fluid: null
-            fluid: Some(FluidType::Water),
-        }
-    }
+    fn setupScene() -> Scene {
+        // gravity : -9.81,
+        let gravity = -9.81;
+        // // gravity : 0.0,
+        // dt : 1.0 / 120.0,
+        let dt = 1.0 / 120.0;
+        // flipRatio : 0.9,
+        let flipRatio = 0.9;
+        // numPressureIters : 100,
+        let numPressureIters = 100;
+        // numParticleIters : 2,
+        let numParticleIters = 2;
+        // frameNr : 0,
+        let frameNr = 0;
+        // overRelaxation : 1.9,
+        let overRelaxation = 1.9;
+        // compensateDrift : true,
+        let compensateDrift = true;
+        // separateParticles : true,
+        let separateParticles = true;
+        // obstacleX : 0.0,
+        let obstacleX = 0.0;
+        // obstacleY : 0.0,
+        let obstacleY = 0.0;
+        // obstacleRadius: 0.15,
+        let obstacleRadius = 0.15;
+        // paused: true,
+        let paused = true;
+        // showObstacle: true,
+        let showObstacle = true;
+        // obstacleVelX: 0.0,
+        let obstacleVelX = 0.0;
+        // obstacleVelY: 0.0,
+        let obstacleVelY = 0.0;
+        // showParticles: true,
+        let showParticles = true;
+        // showGrid: false,
+        let showGrid = false;
+        // fluid: null
 
-    // function setupScene() {
-    fn setupScene(&mut self) {
+        // function setupScene() {
         // scene.obstacleRadius = 0.15;
-        self.obstacleRadius = 0.15;
+        let obstacleRadius = 0.15;
         // scene.overRelaxation = 1.9;
-        self.overRelaxation = 1.9;
+        let overRelaxation = 1.9;
         // scene.dt = 1.0 / 60.0;
-        self.dt = 1.0 / 60.0;
+        let dt = 1.0 / 60.0;
         // scene.numPressureIters = 50;
-        self.numPressureIters = 50;
+        let numPressureIters = 50;
         // scene.numParticleIters = 2;
-        self.numParticleIters = 2;
+        let numParticleIters = 2;
 
         // var res = 100;
         let res = 100.0;
@@ -1524,8 +1516,29 @@ impl Scene {
         // // create fluid
 
         // f = scene.fluid = new FlipFluid(density, tankWidth, tankHeight, h, r, maxParticles);
-        self.fluid = FlipFluid::new(density, tankWidth, tankHeight, h, r, maxParticles);
+        let fluid = FlipFluid::new(density, tankWidth, tankHeight, h, r, maxParticles);
 
+        Scene {
+            gravity,
+            dt,
+            flipRatio,
+            numPressureIters,
+            numParticleIters,
+            frameNr,
+            overRelaxation,
+            compensateDrift,
+            separateParticles,
+            obstacleX,
+            obstacleY,
+            obstacleRadius,
+            paused,
+            showObstacle,
+            obstacleVelX,
+            obstacleVelY,
+            showParticles,
+            showGrid,
+            fluid,
+        }
         // // create particles
 
         // f.numParticles = numX * numY;
