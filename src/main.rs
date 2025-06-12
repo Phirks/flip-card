@@ -16,6 +16,27 @@ use heapless::Vec;
 use libm::{exp, floor, floorf, sin, sqrtf};
 // use {defmt_rtt as _, panic_probe as _};
 
+// var canvas = document.getElementById("myCanvas");
+// var gl = canvas.getContext("webgl");
+// canvas.width = window.innerWidth - 20;
+static canvas_width: f32 = 21.0;
+// canvas.height = window.innerHeight - 20;
+static canvas_height: f32 = 21.0;
+
+// canvas.focus();
+
+// var simHeight = 3.0;
+static simHeight: f32 = 3.0;
+// var cScale = canvas.height / simHeight;
+static cScale: f32 = canvas_height / simHeight;
+// var simWidth = canvas.width / cScale;
+static simWidth: f32 = canvas_width / cScale;
+
+// var U_FIELD = 0;
+static U_FIELD: i32 = 0;
+// var V_FIELD = 1;
+static V_FIELD: i32 = 1;
+
 static BIT29: u32 = 0b00100000000000000000000000000000; // pin set
 static BIT28: u32 = 0b00010000000000000000000000000000; // pinout 28 1
 static BIT27: u32 = 0b00001000000000000000000000000000; // pinout 27 2
@@ -1293,47 +1314,6 @@ impl FlipFluid {
         obstacleRadius: f32,
     ) {
         // var scene =
-        let mut scene = Scene {
-            // gravity : -9.81,
-            gravity: -9.81,
-            // // gravity : 0.0,
-            // dt : 1.0 / 120.0,
-            dt: 1.0 / 120.0,
-            // flipRatio : 0.9,
-            flipRatio: 0.9,
-            // numPressureIters : 100,
-            numPressureIters: 100,
-            // numParticleIters : 2,
-            numParticleIters: 2,
-            // frameNr : 0,
-            frameNr: 0,
-            // overRelaxation : 1.9,
-            overRelaxation: 1.9,
-            // compensateDrift : true,
-            compensateDrift: true,
-            // separateParticles : true,
-            separateParticles: true,
-            // obstacleX : 0.0,
-            obstacleX: 0.0,
-            // obstacleY : 0.0,
-            obstacleY: 0.0,
-            // obstacleRadius: 0.15,
-            obstacleRadius: 0.15,
-            // paused: true,
-            paused: true,
-            // showObstacle: true,
-            showObstacle: true,
-            // obstacleVelX: 0.0,
-            obstacleVelX: 0.0,
-            // obstacleVelY: 0.0,
-            obstacleVelY: 0.0,
-            // showParticles: true,
-            showParticles: true,
-            // showGrid: false,
-            showGrid: false,
-            // fluid: null
-            fluid: Some(FluidType::Water),
-        };
 
         // var numSubSteps = 1;
         let numSubSteps = 1.0;
@@ -1412,69 +1392,133 @@ struct Scene {
     obstacleVelY: f32,
     showParticles: bool,
     showGrid: bool,
-    fluid: Option<FluidType>,
+    fluid: FlipFluid,
 }
 
-// function setupScene()
-// {
-// scene.obstacleRadius = 0.15;
-// scene.overRelaxation = 1.9;
+impl Scene {
+    fn new() -> Scene {
+        Scene {
+            // gravity : -9.81,
+            gravity: -9.81,
+            // // gravity : 0.0,
+            // dt : 1.0 / 120.0,
+            dt: 1.0 / 120.0,
+            // flipRatio : 0.9,
+            flipRatio: 0.9,
+            // numPressureIters : 100,
+            numPressureIters: 100,
+            // numParticleIters : 2,
+            numParticleIters: 2,
+            // frameNr : 0,
+            frameNr: 0,
+            // overRelaxation : 1.9,
+            overRelaxation: 1.9,
+            // compensateDrift : true,
+            compensateDrift: true,
+            // separateParticles : true,
+            separateParticles: true,
+            // obstacleX : 0.0,
+            obstacleX: 0.0,
+            // obstacleY : 0.0,
+            obstacleY: 0.0,
+            // obstacleRadius: 0.15,
+            obstacleRadius: 0.15,
+            // paused: true,
+            paused: true,
+            // showObstacle: true,
+            showObstacle: true,
+            // obstacleVelX: 0.0,
+            obstacleVelX: 0.0,
+            // obstacleVelY: 0.0,
+            obstacleVelY: 0.0,
+            // showParticles: true,
+            showParticles: true,
+            // showGrid: false,
+            showGrid: false,
+            // fluid: null
+            fluid: Some(FluidType::Water),
+        }
+    }
 
-// scene.dt = 1.0 / 60.0;
-// scene.numPressureIters = 50;
-// scene.numParticleIters = 2;
+    // function setupScene() {
+    fn setupScene(&mut self) {
+        // scene.obstacleRadius = 0.15;
+        self.obstacleRadius = 0.15;
+        // scene.overRelaxation = 1.9;
+        self.overRelaxation = 1.9;
+        // scene.dt = 1.0 / 60.0;
+        self.dt = 1.0 / 60.0;
+        // scene.numPressureIters = 50;
+        self.numPressureIters = 50;
+        // scene.numParticleIters = 2;
+        self.numParticleIters = 2;
 
-// var res = 100;
-// var tankHeight = 1.0 * simHeight;
-// var tankWidth = 1.0 * simWidth;
-// var h = tankHeight / res;
-// var density = 1000.0;
+        // var res = 100;
+        let res = 100.0;
+        // var tankHeight = 1.0 * simHeight;
+        let tankHeight = 1.0 * simHeight;
+        // var tankWidth = 1.0 * simWidth;
+        let tankWidth = 1.0 * simWidth;
+        // var h = tankHeight / res;
+        let h = tankHeight / res;
+        // var density = 1000.0;
+        let density = 1000.0;
 
-// var relWaterHeight = 0.8
-// var relWaterWidth = 0.6
+        // var relWaterHeight = 0.8
+        let relWaterHeight = 0.8;
+        // var relWaterWidth = 0.6
+        let relWaterWidth = 0.6;
 
-// // dam break
+        // // dam break
 
-// // compute number of particles
+        // // compute number of particles
 
-// var r = 0.3 * h; // particle radius w.r.t. cell size
-// var dx = 2.0 * r;
-// var dy = Math.sqrt(3.0) / 2.0 * dx;
+        // var r = 0.3 * h; // particle radius w.r.t. cell size
+        let r = 0.3 * h;
+        // var dx = 2.0 * r;
+        let dx = 2.0 * r;
+        // var dy = Math.sqrt(3.0) / 2.0 * dx;
+        let dy = sqrtf(3.0) / 2.0 * dx;
 
-// var numX = Math.floor((relWaterWidth * tankWidth - 2.0 * h - 2.0 * r) / dx);
-// var numY = Math.floor((relWaterHeight * tankHeight - 2.0 * h - 2.0 * r) / dy);
-// var maxParticles = numX * numY;
+        // var numX = Math.floor((relWaterWidth * tankWidth - 2.0 * h - 2.0 * r) / dx);
+        let numX = floorf((relWaterWidth * tankWidth - 2.0 * h - 2.0 * r) / dx);
+        // var numY = Math.floor((relWaterHeight * tankHeight - 2.0 * h - 2.0 * r) / dy);
+        let numY = floorf((relWaterHeight * tankHeight - 2.0 * h - 2.0 * r) / dy);
+        // var maxParticles = numX * numY;
+        let maxParticles = (numX * numY) as i32;
 
-// // create fluid
+        // // create fluid
 
-// f = scene.fluid = new FlipFluid(density, tankWidth, tankHeight, h, r, maxParticles);
+        // f = scene.fluid = new FlipFluid(density, tankWidth, tankHeight, h, r, maxParticles);
+        self.fluid = FlipFluid::new(density, tankWidth, tankHeight, h, r, maxParticles);
 
-// // create particles
+        // // create particles
 
-// f.numParticles = numX * numY;
-// var p = 0;
-// for (var i = 0; i < numX; i++) {
-// for (var j = 0; j < numY; j++) {
-// f.particlePos[p++] = h + r + dx * i + (j % 2 == 0 ? 0.0 : r);
-// f.particlePos[p++] = h + r + dy * j
-// }
-// }
+        // f.numParticles = numX * numY;
+        // var p = 0;
+        // for (var i = 0; i < numX; i++) {
+        // for (var j = 0; j < numY; j++) {
+        // f.particlePos[p++] = h + r + dx * i + (j % 2 == 0 ? 0.0 : r);
+        // f.particlePos[p++] = h + r + dy * j
+        // }
+        // }
 
-// // setup grid cells for tank
+        // // setup grid cells for tank
 
-// var n = f.fNumY;
+        // var n = f.fNumY;
 
-// for (var i = 0; i < f.fNumX; i++) {
-// for (var j = 0; j < f.fNumY; j++) {
-// var s = 1.0; // fluid
-// if (i == 0 || i == f.fNumX-1 || j == 0)
-// s = 0.0; // solid
-// f.s[i*n + j] = s
-// }
-// }
+        // for (var i = 0; i < f.fNumX; i++) {
+        // for (var j = 0; j < f.fNumY; j++) {
+        // var s = 1.0; // fluid
+        // if (i == 0 || i == f.fNumX-1 || j == 0)
+        // s = 0.0; // solid
+        // f.s[i*n + j] = s
+        // }
+        // }
 
-// setObstacle(3.0, 2.0, true);
-// }
+        // setObstacle(3.0, 2.0, true);
+    }
+}
 
 struct Screen {
     yx_grid: [[bool; 21]; 21],
