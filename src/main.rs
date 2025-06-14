@@ -5,13 +5,23 @@
 #![allow(unused)]
 use core::num;
 use embassy_executor::Spawner;
+use embassy_futures::select::select;
 use embassy_rp::bind_interrupts;
+use embassy_rp::gpio;
+use embassy_rp::i2c;
+use embassy_rp::i2c::Config as I2C_Config;
+use embassy_rp::i2c::InterruptHandler as I2C_InterruptHandler;
+use embassy_rp::i2c::{AbortReason, Error};
 use embassy_rp::pac::rosc::regs::Count;
+use embassy_rp::peripherals::I2C1;
 use embassy_rp::peripherals::PIO0;
 use embassy_rp::pio::program::pio_asm;
 use embassy_rp::pio::{Config, InterruptHandler, Pio, ShiftConfig, ShiftDirection};
+use embassy_time::Timer;
+use embedded_hal_async::i2c::I2c;
 use fixed::traits::ToFixed;
 use fixed_macro::types::U56F8;
+use gpio::{Level, Output};
 use heapless::Vec;
 use libm::{exp, floor, floorf, sin, sqrtf};
 // use {defmt_rtt as _, panic_probe as _};
@@ -37,7 +47,6 @@ static U_FIELD: i32 = 0;
 // var V_FIELD = 1;
 static V_FIELD: i32 = 1;
 
-static BIT22: u32 = 0b00000000010000000000000000000000; // pinout 19 0
 static BIT21: u32 = 0b00000000001000000000000000000000; // pinout 19 1
 static BIT20: u32 = 0b00000000000100000000000000000000; // pinout 19 2
 static BIT19: u32 = 0b00000000000010000000000000000000; // pinout 19 3
@@ -59,10 +68,11 @@ static BIT4: u32 = 0b00000000000000000000000000010000; // pinout 4 18
 static BIT3: u32 = 0b00000000000000000000000000001000; // pinout 3 19
 static BIT2: u32 = 0b00000000000000000000000000000100; // pinout 2 20
 static BIT1: u32 = 0b00000000000000000000000000000010; // pinout 1 21
+static BIT0: u32 = 0b00000000000000000000000000000001; // pinout 1 21
 
 static BITS: [u32; 22] = [
-    BIT22, BIT21, BIT20, BIT19, BIT18, BIT17, BIT16, BIT15, BIT14, BIT13, BIT12, BIT11, BIT10,
-    BIT9, BIT8, BIT7, BIT6, BIT5, BIT4, BIT3, BIT2, BIT1,
+    BIT21, BIT20, BIT19, BIT18, BIT17, BIT16, BIT15, BIT14, BIT13, BIT12, BIT11, BIT10, BIT9, BIT8,
+    BIT7, BIT6, BIT5, BIT4, BIT3, BIT2, BIT1, BIT0,
 ];
 
 static LOOKUP_TABLE: [[usize; 21]; 21] = [
@@ -1361,7 +1371,7 @@ impl FlipFluid {
                 self.pushParticlesApart(numParticleIters);
             }
             // this.handleParticleCollisions(obstacleX, abstacleY, obstacleRadius)
-            self.handleParticleCollisions(obstacleX, obstacleY, obstacleRadius, &scene);
+            //           self.handleParticleCollisions(obstacleX, obstacleY, obstacleRadius, &scene);
             // this.transferVelocities(true);
             self.transferVelocities(true, 1.9);
             // this.updateParticleDensity();
@@ -1813,11 +1823,14 @@ pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
 
 bind_interrupts!(struct Irqs {  //sets up the IRQ for the PIO, probably to pull data out of the RX FIFO
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
+    I2C1_IRQ => I2C_InterruptHandler<I2C1>;
 });
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
+    // let mut enable_accel = Output::new(p.PIN_29, Level::Low);
+    // enable_accel.set_high();
     let pio = p.PIO0; //this PIO object is one of the 4 PIO peripherals
     let Pio {
         //why is this capitalized?
@@ -1825,6 +1838,14 @@ async fn main(_spawner: Spawner) {
         sm0: mut sm,
         ..
     } = Pio::new(pio, Irqs); //contains the pio peripheral
+
+    let i2c_config = embassy_rp::i2c::Config::default();
+    let mut i2c = embassy_rp::i2c::I2c::new_async(p.I2C1, p.PIN_23, p.PIN_22, Irqs, i2c_config);
+
+    let mut portb = [0];
+    let addr: u8 = 0x0C;
+    Timer::after_millis(1000).await;
+    select(Timer::after_millis(10000), i2c.write(addr, &[0x0F])).await;
 
     let prg = pio_asm!(
         //this program  is for moving data from TX to RX
@@ -1876,18 +1897,10 @@ async fn main(_spawner: Spawner) {
     let p19 = common.make_pio_pin(p.PIN_19);
     let p20 = common.make_pio_pin(p.PIN_20);
     let p21 = common.make_pio_pin(p.PIN_21);
-    let p22 = common.make_pio_pin(p.PIN_22);
-    let p23 = common.make_pio_pin(p.PIN_23);
-    let p24 = common.make_pio_pin(p.PIN_24);
-    let p25 = common.make_pio_pin(p.PIN_25);
-    let p26 = common.make_pio_pin(p.PIN_26);
-    let p27 = common.make_pio_pin(p.PIN_27);
-    let p28 = common.make_pio_pin(p.PIN_28);
-    let p29 = common.make_pio_pin(p.PIN_29);
 
     cfg.set_out_pins(&[
         &p0, &p1, &p2, &p3, &p4, &p5, &p6, &p7, &p8, &p9, &p10, &p11, &p12, &p13, &p14, &p15, &p16,
-        &p17, &p18, &p19, &p20, &p21, &p22, &p23, &p24, &p25, &p26, &p27, &p28, &p29,
+        &p17, &p18, &p19, &p20, &p21,
     ]);
     cfg.use_program(&common.load_program(&prg.program), &[]); // load the program instructions
     cfg.clock_divider = (U56F8!(125_000_000) / 30_000).to_fixed(); //set the speed, I thing its 12,500Hz

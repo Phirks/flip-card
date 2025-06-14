@@ -28,6 +28,7 @@ embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "6186d111a5c
     "rp235xa",
     "binary-info",
 ] }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "6186d111a5c150946ee5b7e9e68d987a38c1a463" }
 
 heapless = "0.8"
 libc = { version = "0.2.172", default-features = false }
@@ -36,6 +37,7 @@ fixed = "1.23.1"
 fixed-macro = "1.2"
 cortex-m = { version = "0.7.6", features = ["inline-asm"] }
 cortex-m-rt = "0.7.0"
+embedded-hal-async = "1.0"
 # defmt = "1.0.1"
 # defmt-rtt = "1.0.0"
 # panic-probe = { version = "1.0.0", features = ["print-defmt"] }
