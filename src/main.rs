@@ -1355,7 +1355,7 @@ impl FlipFluid {
         obstacleRadius: f32,
     ) {
         // var scene =
-
+        let scene = Scene::setupScene();
         // var numSubSteps = 1;
         let numSubSteps = 1.0;
         // var sdt = dt / numSubSteps;
@@ -1368,10 +1368,10 @@ impl FlipFluid {
             // if (separateParticles)
             if separateParticles {
                 // this.pushParticlesApart(numParticleIters);
-                self.pushParticlesApart(numParticleIters);
+            self.pushParticlesApart(numParticleIters);
             }
             // this.handleParticleCollisions(obstacleX, abstacleY, obstacleRadius)
-            //           self.handleParticleCollisions(obstacleX, obstacleY, obstacleRadius, &scene);
+            self.handleParticleCollisions(obstacleX, obstacleY, obstacleRadius, &scene);
             // this.transferVelocities(true);
             self.transferVelocities(true, 1.9);
             // this.updateParticleDensity();
@@ -1919,6 +1919,8 @@ async fn main(_spawner: Spawner) {
     sm.set_config(&cfg);
     sm.set_enable(true);
 
+    spawner.spawn(update(scene)).unwrap();
+
     let mut dma_out_ref = p.DMA_CH0;
 
     let mut screen = Screen {
@@ -1946,6 +1948,50 @@ async fn main(_spawner: Spawner) {
                 .await;
         }
     }
+}
+
+// function simulate(){
+async fn simulate(scene: &mut Scene){
+// 		if (!scene.paused)
+    if (!scene.paused) {
+// 			scene.fluid.simulate(
+// 				scene.dt, scene.gravity, scene.flipRatio, scene.numPressureIters, scene.numParticleIters, 
+// 				scene.overRelaxation, scene.compensateDrift, scene.separateParticles,
+// 				scene.obstacleX, scene.obstacleY, scene.obstacleRadius, scene.colorFieldNr);
+        scene.fluid.simulate(
+            scene.dt, 
+            secene.gravity, 
+            scene.flipRatio, 
+            scene.numPressureIters, 
+            scene.numParticleIters, 
+            scene.overRelaxation, 
+            scene.compensateDrift, 
+            scene.separateParticles, 
+            scene.obstacleX, 
+            scene.obstacleY, 
+            scene.obstacleRadius);
+        
+// 			scene.frameNr++;
+            scene.frameNr += 1;
+    }
+}
+#[embassy_executor::task]
+// 	function update() {
+async fn update(scene: Scene) {
+// 		simulate();
+    loop{
+        simulate(&mut scene).await;
+    // 		draw();
+        draw();
+    // 		requestAnimationFrame(update);
+    }
+}
+	
+// 	setupScene();
+// 	update();
+
+fn draw(){
+
 }
 
 #[panic_handler]
