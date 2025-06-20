@@ -3,6 +3,7 @@
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
 #![allow(unused)]
+#![allow(non_upper_case_globals)]
 use core::num;
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
@@ -12,11 +13,15 @@ use embassy_rp::i2c;
 use embassy_rp::i2c::Config as I2C_Config;
 use embassy_rp::i2c::InterruptHandler as I2C_InterruptHandler;
 use embassy_rp::i2c::{AbortReason, Error};
+use embassy_rp::pac;
+use embassy_rp::pac::common::W;
 use embassy_rp::pac::rosc::regs::Count;
 use embassy_rp::peripherals::I2C1;
 use embassy_rp::peripherals::PIO0;
 use embassy_rp::pio::program::pio_asm;
 use embassy_rp::pio::{Config, InterruptHandler, Pio, ShiftConfig, ShiftDirection};
+use embassy_rp::watchdog::*;
+use embassy_sync::watch;
 use embassy_time::Timer;
 use embedded_hal_async::i2c::I2c;
 use fixed::traits::ToFixed;
@@ -26,12 +31,22 @@ use heapless::Vec;
 use libm::{exp, floor, floorf, sin, sqrtf};
 // use {defmt_rtt as _, panic_probe as _};
 
+static max_particles_setting: usize = 400;
+static number_of_vertical_cells_setting: usize = 23;
+static number_of_horizontal_cells_setting: usize = 23;
+
+static max_particles_x2_setting: usize = max_particles_setting * 3;
+static max_particles_x3_setting: usize = max_particles_setting * 3;
+static number_of_cells_setting: usize =
+    number_of_vertical_cells_setting * number_of_horizontal_cells_setting;
+static number_of_cells_x2_setting: usize = number_of_cells_setting * 2;
+static number_of_cells_x3_setting: usize = number_of_cells_setting * 3;
+static canvas_height: f32 = number_of_vertical_cells_setting as f32;
+static canvas_width: f32 = number_of_horizontal_cells_setting as f32;
 // var canvas = document.getElementById("myCanvas");
 // var gl = canvas.getContext("webgl");
 // canvas.width = window.innerWidth - 20;
-static canvas_width: f32 = 21.0;
 // canvas.height = window.innerHeight - 20;
-static canvas_height: f32 = 21.0;
 
 // canvas.focus();
 
@@ -268,7 +283,7 @@ struct FlipFluid {
     /// the number of cells in the y direction
     fNumY: f32,
 
-    /// the largest distance between 2 adjacent cells
+    /// the largest distance between 2 adjacent cells (basically the size of a cell)
     h: f32,
 
     /// the inverse of the largest distance between 2 adjacent cells (1.0/h)
@@ -277,30 +292,46 @@ struct FlipFluid {
     /// the number of total cells
     fNumCells: f32,
 
-    u: Vec<f32, 30>,
-    v: Vec<f32, 30>,
-    du: Vec<f32, 30>,
-    dv: Vec<f32, 30>,
-    prevU: Vec<f32, 30>,
-    prevV: Vec<f32, 30>,
-    p: Vec<f32, 30>,
-    s: Vec<f32, 30>,
-    cellType: Vec<CellType, 30>,
-    cellColor: Vec<f32, 90>,
+    /// an array of the cell positions 2*i is y coordinate, 2*i+1 is x coordinate
+    u: Vec<f32, number_of_cells_setting>,
+
+    /// an array of the cell velocities 2*i is the vertical velocity, 2*i+1 is the horizontal velocity
+    v: Vec<f32, number_of_cells_setting>,
+
+    /// this is an array of the amount the position will change in one time step 2*i is the
+    /// y coordinate change and 2*i+1 is the x coordinate change
+    du: Vec<f32, number_of_cells_setting>,
+
+    /// this is an array of the amount the velocity will change in one time step 2*i is the
+    /// vertical velocity change and 2*i+1 is the horizontal velocity change.
+    dv: Vec<f32, number_of_cells_setting>,
+
+    /// this is an array of the previous iteration's particle position 2*i are y coordinates
+    /// and 2*i+1 are x coordinates
+    prevU: Vec<f32, number_of_cells_setting>,
+
+    /// this is an array of the previous iteration's particle velocity.  2*i are y vertical
+    /// velocities and 2*i+1 are horizontal velocities.
+    prevV: Vec<f32, number_of_cells_setting>,
+
+    p: Vec<f32, number_of_cells_setting>,
+    s: Vec<f32, number_of_cells_setting>,
+    cellType: Vec<CellType, number_of_cells_setting>,
+    cellColor: Vec<f32, number_of_cells_x3_setting>,
 
     /// the max number of particles, used to size the arrays
     maxParticles: i32,
 
     /// the particle position, in meters, indexes 2*i are vertical, 2*i+1 are horizontal
-    particlePos: Vec<f32, 64>,
+    particlePos: Vec<f32, max_particles_x2_setting>,
 
     /// the particle color, in groups of 3 for RGB
-    particleColor: Vec<f32, 96>,
+    particleColor: Vec<f32, max_particles_x3_setting>,
 
     /// the particle velocity, in m/s, indexes 2*i are vertical, 2*i+1 are horizontal
-    particleVel: Vec<f32, 64>,
+    particleVel: Vec<f32, max_particles_x2_setting>,
 
-    particleDensity: Vec<f32, 32>,
+    particleDensity: Vec<f32, number_of_cells_setting>,
     particleRestDensity: f32,
     particleRadius: f32,
 
@@ -311,7 +342,7 @@ struct FlipFluid {
 
     numCellParticles: Vec<i32, 30>,
     firstCellParticle: Vec<i32, 32>,
-    cellParticleIds: Vec<i32, 31>,
+    cellParticleIds: Vec<i32, max_particles_setting>,
 
     /// the total number of particles in the system
     numParticles: i32,
@@ -340,61 +371,61 @@ impl FlipFluid {
         let fNumCells = (fNumX * fNumY);
 
         // this.u = new Float32Array(this.fNumCells);
-        let u: Vec<f32, 30> = Vec::new();
+        let u = Vec::new();
         // this.v = new Float32Array(this.fNumCells);
-        let v: Vec<f32, 30> = Vec::new();
+        let v = Vec::new();
         // this.du = new Float32Array(this.fNumCells);
-        let du: Vec<f32, 30> = Vec::new();
+        let du = Vec::new();
         // this.dv = new Float32Array(this.fNumCells);
-        let dv: Vec<f32, 30> = Vec::new();
+        let dv = Vec::new();
         // this.prevU = new Float32Array(this.fNumCells);
-        let prevU: Vec<f32, 30> = Vec::new();
+        let prevU = Vec::new();
         // this.prevV = new Float32Array(this.fNumCells);
-        let prevV: Vec<f32, 30> = Vec::new();
+        let prevV = Vec::new();
         // this.p = new Float32Array(this.fNumCells);
-        let p: Vec<f32, 30> = Vec::new();
+        let p = Vec::new();
         // this.s = new Float32Array(this.fNumCells);
-        let s: Vec<f32, 30> = Vec::new();
+        let s = Vec::new();
         // this.cellType = new Int32Array(this.fNumCells);
-        let cellType: Vec<CellType, 30> = Vec::new();
+        let cellType = Vec::new();
         // this.cellColor = new Float32Array(3 * this.fNumCells);
-        let cellColor: Vec<f32, 90> = Vec::new();
+        let cellColor = Vec::new();
         // this.particleRadius = particleRadius;
         // this.maxParticles = maxParticles;
         //maxParticles
         // this.particlePos = new Float32Array(2 * this.maxParticles);
-        let particlePos: Vec<f32, 64> = Vec::new();
+        let particlePos = Vec::new();
         // this.particleColor = new Float32Array(3 * this.maxParticles);
-        let mut particleColor: Vec<f32, 96> = Vec::new();
+        let mut particleColor = Vec::new();
         // for (var i = 0; i < this.maxParticles; i++)
         // this.particleColor[3 * i + 2] = 1.0;
         for i in 0..maxParticles {
             particleColor[(3 * i + 2) as usize] = 1.0;
         }
         // this.particleVel = new Float32Array(2 * this.maxParticles);
-        let particleVel: Vec<f32, 64> = Vec::new();
+        let particleVel = Vec::new();
         // this.particleDensity = new Float32Array(this.fNumCells);
-        let particleDensity: Vec<f32, 32> = Vec::new();
+        let particleDensity = Vec::new();
         // this.particleRestDensity = 0.0;
-        let particleRestDensity: f32 = 0.0f32;
+        let particleRestDensity = 0.0f32;
 
         //particleRadius
         // this.pInvSpacing = 1.0 / (2.2 * particleRadius);
-        let pInvSpacing: f32 = 1.0 / (2.2 * particleRadius);
+        let pInvSpacing = 1.0 / (2.2 * particleRadius);
         // this.pNumX = Math.floor(width * this.pInvSpacing) + 1;
-        let pNumX: i32 = floorf(width * pInvSpacing) as i32;
+        let pNumX = floorf(width * pInvSpacing) as i32;
         // this.pNumY = Math.floor(height * this.pInvSpacing) + 1;
-        let pNumY: i32 = floorf(height * pInvSpacing) as i32;
+        let pNumY = floorf(height * pInvSpacing) as i32;
         // this.pNumCells = this.pNumX * this.pNumY;
-        let pNumCells: i32 = pNumX * pNumY;
+        let pNumCells = pNumX * pNumY;
         // this.numCellParticles = new Int32Array(this.pNumCells);
-        let numCellParticles: Vec<i32, 30> = Vec::new();
+        let numCellParticles = Vec::new();
         // this.firstCellParticle = new Int32Array(this.pNumCells + 1);
-        let cellParticleIds: Vec<i32, 31> = Vec::new();
+        let cellParticleIds = Vec::new();
         // this.cellParticleIds = new Int32Array(maxParticles);
-        let firstCellParticle: Vec<i32, 32> = Vec::new();
+        let firstCellParticle = Vec::new();
         // this.numParticles = 0;
-        let numParticles: i32 = 0i32;
+        let numParticles = 0i32;
 
         FlipFluid {
             density,
@@ -430,6 +461,7 @@ impl FlipFluid {
             numParticles,
         }
     }
+
     // integrateParticles(dt, gravity)
     /// add gravity to the velocity of the particles and calculate positions.
     ///
@@ -455,6 +487,9 @@ impl FlipFluid {
     }
     // pushParticlesApart(numIters)
     /// store the particle positions in x and y and
+    /// make incompressible by making sure the amount of fluid that enters a cell is equal to the fluid that leaves it
+    ///
+    ///
     fn pushParticlesApart(&mut self, numIters: i32) {
         // var colorDiffusionCoeff = 0.001;
         let colorDiffusionCoeff: f32 = 0.001;
@@ -831,6 +866,7 @@ impl FlipFluid {
     }
 
     // transferVelocities(toGrid, flipRatio){
+    /// transfer the particle velocities to the grid or vice versa
     fn transferVelocities(&mut self, toGrid: bool, flipRatio: f32) {
         // var n = this.fNumY;
         let n = self.fNumY;
@@ -841,6 +877,9 @@ impl FlipFluid {
         // var h2 = 0.5 * h;
         let h2 = 0.5 * h;
 
+        // clone cell positions and velocities into buffers and clear the values
+        // for each cell, check if s = 0.0 and call it a solid cell if it is and air cell if not.
+        // for each particle store the x and y position and
         // if (toGrid) {
         if toGrid {
             // this.prevU.set(this.u);
@@ -1088,6 +1127,7 @@ impl FlipFluid {
     }
 
     // solveIncompressibility(numIters, dt, overRelaxation, compensateDrift = true) {
+    // make the grid velocities incompressible
     fn solveIncompressibility(
         &mut self,
         numIters: i32,
@@ -1355,7 +1395,7 @@ impl FlipFluid {
         obstacleRadius: f32,
     ) {
         // var scene =
-        let scene = Scene::setupScene();
+
         // var numSubSteps = 1;
         let numSubSteps = 1.0;
         // var sdt = dt / numSubSteps;
@@ -1368,10 +1408,10 @@ impl FlipFluid {
             // if (separateParticles)
             if separateParticles {
                 // this.pushParticlesApart(numParticleIters);
-            self.pushParticlesApart(numParticleIters);
+                self.pushParticlesApart(numParticleIters);
             }
             // this.handleParticleCollisions(obstacleX, abstacleY, obstacleRadius)
-            self.handleParticleCollisions(obstacleX, obstacleY, obstacleRadius, &scene);
+            //           self.handleParticleCollisions(obstacleX, obstacleY, obstacleRadius, &scene);
             // this.transferVelocities(true);
             self.transferVelocities(true, 1.9);
             // this.updateParticleDensity();
@@ -1593,6 +1633,10 @@ impl Screen {
             }
         }
     }
+    fn one_pixel(&mut self, (y, x): (usize, usize)) {
+        self.index_grid = [false; 484];
+        self.index_grid[LOOKUP_TABLE[y][x]] = true;
+    }
     fn make_output(&mut self) {
         self.out_array = [0; 484];
         let mut index = 0;
@@ -1626,182 +1670,324 @@ impl Screen {
             }
         }
     }
-    fn disp_num(&mut self, num: usize) {
-        for y in 15..21 {
-            for x in 0..4 {
+    fn disp_num(&mut self, num: usize, yloc: usize, xloc: usize) {
+        let ymin = yloc;
+        let ymax = yloc + 7;
+        let xmin = xloc;
+        let xmax = xloc + 5;
+
+        for y in ymin..ymax {
+            for x in xmin..xmax {
                 self.yx_grid[y][x] = false;
             }
         }
         match num {
             0 => {
-                self.yx_grid[16][0] = true;
-                self.yx_grid[17][0] = true;
-                self.yx_grid[18][0] = true;
-                self.yx_grid[19][0] = true;
-                self.yx_grid[20][0] = true;
+                self.yx_grid[ymin + 1][xmin + 1] = true;
+                self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                self.yx_grid[ymin + 4][xmin + 1] = true;
+                self.yx_grid[ymin + 5][xmin + 1] = true;
 
-                self.yx_grid[16][1] = true;
-                //self.yx_grid[18][1] = true;
-                self.yx_grid[20][1] = true;
+                self.yx_grid[ymin + 1][xmin + 2] = true;
+                //self.yx_grid[ymin +3][xmin + 2] = true;
+                self.yx_grid[ymin + 5][xmin + 2] = true;
 
-                self.yx_grid[16][2] = true;
-                self.yx_grid[17][2] = true;
-                self.yx_grid[18][2] = true;
-                self.yx_grid[19][2] = true;
-                self.yx_grid[20][2] = true;
+                self.yx_grid[ymin + 1][xmin + 3] = true;
+                self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
             }
             1 => {
-                // self.yx_grid[16][0] = true;
-                // self.yx_grid[17][0] = true;
-                // self.yx_grid[18][0] = true;
-                // self.yx_grid[19][0] = true;
-                // self.yx_grid[20][0] = true;
+                // self.yx_grid[ymin + 1][xmin + 1] = true;
+                // self.yx_grid[ymin + 2][xmin + 1] = true;
+                // self.yx_grid[ymin + 3][xmin + 1] = true;
+                // self.yx_grid[ymin + 4][xmin + 1] = true;
+                // self.yx_grid[ymin + 5][xmin + 1] = true;
 
-                // self.yx_grid[16][1] = true;
-                // self.yx_grid[18][1] = true;
-                // self.yx_grid[20][1] = true;
+                // self.yx_grid[ymin + 1][xmin + 2] = true;
+                // self.yx_grid[ymin +3][xmin + 2] = true;
+                // self.yx_grid[ymin + 5][xmin + 2] = true;
 
-                self.yx_grid[16][2] = true;
-                self.yx_grid[17][2] = true;
-                self.yx_grid[18][2] = true;
-                self.yx_grid[19][2] = true;
-                self.yx_grid[20][2] = true;
+                self.yx_grid[ymin + 1][xmin + 3] = true;
+                self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
             }
             2 => {
-                self.yx_grid[16][0] = true;
-                //self.yx_grid[17][0] = true;
-                self.yx_grid[18][0] = true;
-                self.yx_grid[19][0] = true;
-                self.yx_grid[20][0] = true;
+                self.yx_grid[ymin + 1][xmin + 1] = true;
+                // self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                self.yx_grid[ymin + 4][xmin + 1] = true;
+                self.yx_grid[ymin + 5][xmin + 1] = true;
 
-                self.yx_grid[16][1] = true;
-                self.yx_grid[18][1] = true;
-                self.yx_grid[20][1] = true;
+                self.yx_grid[ymin + 1][xmin + 2] = true;
+                self.yx_grid[ymin + 3][xmin + 2] = true;
+                self.yx_grid[ymin + 5][xmin + 2] = true;
 
-                self.yx_grid[16][2] = true;
-                self.yx_grid[17][2] = true;
-                self.yx_grid[18][2] = true;
-                //self.yx_grid[19][2] = true;
-                self.yx_grid[20][2] = true;
+                self.yx_grid[ymin + 1][xmin + 3] = true;
+                self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                // self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
             }
             3 => {
-                self.yx_grid[16][0] = true;
-                //self.yx_grid[17][0] = true;
-                self.yx_grid[18][0] = true;
-                //self.yx_grid[19][0] = true;
-                self.yx_grid[20][0] = true;
+                self.yx_grid[ymin + 1][xmin + 1] = true;
+                // self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                // self.yx_grid[ymin + 4][xmin + 1] = true;
+                self.yx_grid[ymin + 5][xmin + 1] = true;
 
-                self.yx_grid[16][1] = true;
-                self.yx_grid[18][1] = true;
-                self.yx_grid[20][1] = true;
+                self.yx_grid[ymin + 1][xmin + 2] = true;
+                self.yx_grid[ymin + 3][xmin + 2] = true;
+                self.yx_grid[ymin + 5][xmin + 2] = true;
 
-                self.yx_grid[16][2] = true;
-                self.yx_grid[17][2] = true;
-                self.yx_grid[18][2] = true;
-                self.yx_grid[19][2] = true;
-                self.yx_grid[20][2] = true;
+                self.yx_grid[ymin + 1][xmin + 3] = true;
+                self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
             }
             4 => {
-                self.yx_grid[16][0] = true;
-                self.yx_grid[17][0] = true;
-                self.yx_grid[18][0] = true;
-                //self.yx_grid[19][0] = true;
-                //self.yx_grid[20][0] = true;
+                self.yx_grid[ymin + 1][xmin + 1] = true;
+                self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                // self.yx_grid[ymin + 4][xmin + 1] = true;
+                // self.yx_grid[ymin + 5][xmin + 1] = true;
 
-                //self.yx_grid[16][1] = true;
-                self.yx_grid[18][1] = true;
-                //self.yx_grid[20][1] = true;
+                // self.yx_grid[ymin + 1][xmin + 2] = true;
+                self.yx_grid[ymin + 3][xmin + 2] = true;
+                // self.yx_grid[ymin + 5][xmin + 2] = true;
 
-                self.yx_grid[16][2] = true;
-                self.yx_grid[17][2] = true;
-                self.yx_grid[18][2] = true;
-                self.yx_grid[19][2] = true;
-                self.yx_grid[20][2] = true;
+                self.yx_grid[ymin + 1][xmin + 3] = true;
+                self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
             }
             5 => {
-                self.yx_grid[16][0] = true;
-                self.yx_grid[17][0] = true;
-                self.yx_grid[18][0] = true;
-                //self.yx_grid[19][0] = true;
-                self.yx_grid[20][0] = true;
+                self.yx_grid[ymin + 1][xmin + 1] = true;
+                self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                // self.yx_grid[ymin + 4][xmin + 1] = true;
+                self.yx_grid[ymin + 5][xmin + 1] = true;
 
-                self.yx_grid[16][1] = true;
-                self.yx_grid[18][1] = true;
-                self.yx_grid[20][1] = true;
+                self.yx_grid[ymin + 1][xmin + 2] = true;
+                self.yx_grid[ymin + 3][xmin + 2] = true;
+                self.yx_grid[ymin + 5][xmin + 2] = true;
 
-                self.yx_grid[16][2] = true;
-                //self.yx_grid[17][2] = true;
-                self.yx_grid[18][2] = true;
-                self.yx_grid[19][2] = true;
-                self.yx_grid[20][2] = true;
+                self.yx_grid[ymin + 1][xmin + 3] = true;
+                // self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
             }
             6 => {
-                self.yx_grid[16][0] = true;
-                self.yx_grid[17][0] = true;
-                self.yx_grid[18][0] = true;
-                self.yx_grid[19][0] = true;
-                self.yx_grid[20][0] = true;
+                self.yx_grid[ymin + 1][xmin + 1] = true;
+                self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                self.yx_grid[ymin + 4][xmin + 1] = true;
+                self.yx_grid[ymin + 5][xmin + 1] = true;
 
-                //self.yx_grid[16][1] = true;
-                self.yx_grid[18][1] = true;
-                self.yx_grid[20][1] = true;
+                // self.yx_grid[ymin + 1][xmin + 2] = true;
+                self.yx_grid[ymin + 3][xmin + 2] = true;
+                self.yx_grid[ymin + 5][xmin + 2] = true;
 
-                //self.yx_grid[16][2] = true;
-                //self.yx_grid[17][2] = true;
-                self.yx_grid[18][2] = true;
-                self.yx_grid[19][2] = true;
-                self.yx_grid[20][2] = true;
+                // self.yx_grid[ymin + 1][xmin + 3] = true;
+                // self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
             }
             7 => {
-                self.yx_grid[16][0] = true;
-                //self.yx_grid[17][0] = true;
-                //self.yx_grid[18][0] = true;
-                //self.yx_grid[19][0] = true;
-                //self.yx_grid[20][0] = true;
+                self.yx_grid[ymin + 1][xmin + 1] = true;
+                // self.yx_grid[ymin + 2][xmin + 1] = true;
+                // self.yx_grid[ymin + 3][xmin + 1] = true;
+                // self.yx_grid[ymin + 4][xmin + 1] = true;
+                // self.yx_grid[ymin + 5][xmin + 1] = true;
 
-                self.yx_grid[16][1] = true;
-                //self.yx_grid[18][1] = true;
-                //self.yx_grid[20][1] = true;
+                self.yx_grid[ymin + 1][xmin + 2] = true;
+                // self.yx_grid[ymin +3][xmin + 2] = true;
+                // self.yx_grid[ymin + 5][xmin + 2] = true;
 
-                self.yx_grid[16][2] = true;
-                self.yx_grid[17][2] = true;
-                self.yx_grid[18][2] = true;
-                self.yx_grid[19][2] = true;
-                self.yx_grid[20][2] = true;
+                self.yx_grid[ymin + 1][xmin + 3] = true;
+                self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
             }
             8 => {
-                self.yx_grid[16][0] = true;
-                self.yx_grid[17][0] = true;
-                self.yx_grid[18][0] = true;
-                self.yx_grid[19][0] = true;
-                self.yx_grid[20][0] = true;
+                self.yx_grid[ymin + 1][xmin + 1] = true;
+                self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                self.yx_grid[ymin + 4][xmin + 1] = true;
+                self.yx_grid[ymin + 5][xmin + 1] = true;
 
-                self.yx_grid[16][1] = true;
-                self.yx_grid[18][1] = true;
-                self.yx_grid[20][1] = true;
+                self.yx_grid[ymin + 1][xmin + 2] = true;
+                self.yx_grid[ymin + 3][xmin + 2] = true;
+                self.yx_grid[ymin + 5][xmin + 2] = true;
 
-                self.yx_grid[16][2] = true;
-                self.yx_grid[17][2] = true;
-                self.yx_grid[18][2] = true;
-                self.yx_grid[19][2] = true;
-                self.yx_grid[20][2] = true;
+                self.yx_grid[ymin + 1][xmin + 3] = true;
+                self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
             }
             9 => {
-                self.yx_grid[16][0] = true;
-                self.yx_grid[17][0] = true;
-                self.yx_grid[18][0] = true;
-                //self.yx_grid[19][0] = true;
-                //self.yx_grid[20][0] = true;
+                self.yx_grid[ymin + 1][xmin + 1] = true;
+                self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                // self.yx_grid[ymin + 4][xmin + 1] = true;
+                // self.yx_grid[ymin + 5][xmin + 1] = true;
 
-                self.yx_grid[16][1] = true;
-                self.yx_grid[18][1] = true;
-                //self.yx_grid[20][1] = true;
+                self.yx_grid[ymin + 1][xmin + 2] = true;
+                self.yx_grid[ymin + 3][xmin + 2] = true;
+                // self.yx_grid[ymin + 5][xmin + 2] = true;
 
-                self.yx_grid[16][2] = true;
-                self.yx_grid[17][2] = true;
-                self.yx_grid[18][2] = true;
-                self.yx_grid[19][2] = true;
-                self.yx_grid[20][2] = true;
+                self.yx_grid[ymin + 1][xmin + 3] = true;
+                self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
+            }
+            10 => {
+                self.yx_grid[ymin + 1][xmin + 1] = true;
+                self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                self.yx_grid[ymin + 4][xmin + 1] = true;
+                self.yx_grid[ymin + 5][xmin + 1] = true;
+
+                self.yx_grid[ymin + 1][xmin + 2] = true;
+                self.yx_grid[ymin + 3][xmin + 2] = true;
+                // self.yx_grid[ymin + 5][xmin + 2] = true;
+
+                self.yx_grid[ymin + 1][xmin + 3] = true;
+                self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
+            }
+            11 => {
+                self.yx_grid[ymin + 1][xmin + 1] = true;
+                self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                self.yx_grid[ymin + 4][xmin + 1] = true;
+                self.yx_grid[ymin + 5][xmin + 1] = true;
+
+                //self.yx_grid[ymin + 1][xmin + 2] = true;
+                self.yx_grid[ymin + 3][xmin + 2] = true;
+                self.yx_grid[ymin + 5][xmin + 2] = true;
+
+                //self.yx_grid[ymin + 1][xmin + 3] = true;
+                //self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
+            }
+            12 => {
+                self.yx_grid[ymin + 1][xmin + 1] = true;
+                self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                self.yx_grid[ymin + 4][xmin + 1] = true;
+                self.yx_grid[ymin + 5][xmin + 1] = true;
+
+                self.yx_grid[ymin + 1][xmin + 2] = true;
+                //self.yx_grid[ymin +3][xmin + 2] = true;
+                self.yx_grid[ymin + 5][xmin + 2] = true;
+
+                self.yx_grid[ymin + 1][xmin + 3] = true;
+                //self.yx_grid[ymin + 2][xmin + 3] = true;
+                //self.yx_grid[ymin + 3][xmin + 3] = true;
+                //self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
+            }
+            13 => {
+                //self.yx_grid[ymin + 1][xmin + 1] = true;
+                //self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                self.yx_grid[ymin + 4][xmin + 1] = true;
+                self.yx_grid[ymin + 5][xmin + 1] = true;
+
+                //self.yx_grid[ymin + 1][xmin + 2] = true;
+                self.yx_grid[ymin + 3][xmin + 2] = true;
+                self.yx_grid[ymin + 5][xmin + 2] = true;
+
+                self.yx_grid[ymin + 1][xmin + 3] = true;
+                self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
+            }
+            14 => {
+                self.yx_grid[ymin + 1][xmin + 1] = true;
+                self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                self.yx_grid[ymin + 4][xmin + 1] = true;
+                self.yx_grid[ymin + 5][xmin + 1] = true;
+
+                self.yx_grid[ymin + 1][xmin + 2] = true;
+                self.yx_grid[ymin + 3][xmin + 2] = true;
+                self.yx_grid[ymin + 5][xmin + 2] = true;
+
+                self.yx_grid[ymin + 1][xmin + 3] = true;
+                // self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                // self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
+            }
+            15 => {
+                self.yx_grid[ymin + 1][xmin + 1] = true;
+                self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                self.yx_grid[ymin + 4][xmin + 1] = true;
+                self.yx_grid[ymin + 5][xmin + 1] = true;
+
+                self.yx_grid[ymin + 1][xmin + 2] = true;
+                self.yx_grid[ymin + 3][xmin + 2] = true;
+                // self.yx_grid[ymin + 5][xmin + 2] = true;
+
+                self.yx_grid[ymin + 1][xmin + 3] = true;
+                // self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                // self.yx_grid[ymin + 4][xmin + 3] = true;
+                // self.yx_grid[ymin + 5][xmin + 3] = true;
+            }
+            16 => {
+                // self.yx_grid[ymin + 1][xmin + 1] = true;
+                // self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                // self.yx_grid[ymin + 4][xmin + 1] = true;
+                self.yx_grid[ymin + 5][xmin + 1] = true;
+
+                // self.yx_grid[ymin + 1][xmin + 2] = true;
+                // self.yx_grid[ymin +3][xmin + 2] = true;
+                // self.yx_grid[ymin + 5][xmin + 2] = true;
+                self.yx_grid[ymin + 4][xmin + 2] = true;
+
+                // self.yx_grid[ymin + 1][xmin + 3] = true;
+                // self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                // self.yx_grid[ymin + 4][xmin + 3] = true;
+                self.yx_grid[ymin + 5][xmin + 3] = true;
+            }
+            17 => {
+                // self.yx_grid[ymin + 1][xmin + 1] = true;
+                // self.yx_grid[ymin + 2][xmin + 1] = true;
+                self.yx_grid[ymin + 3][xmin + 1] = true;
+                // self.yx_grid[ymin + 4][xmin + 1] = true;
+                // self.yx_grid[ymin + 5][xmin + 1] = true;
+
+                // self.yx_grid[ymin + 1][xmin + 2] = true;
+                self.yx_grid[ymin + 3][xmin + 2] = true;
+                // self.yx_grid[ymin + 5][xmin + 2] = true;
+
+                // self.yx_grid[ymin + 1][xmin + 3] = true;
+                // self.yx_grid[ymin + 2][xmin + 3] = true;
+                self.yx_grid[ymin + 3][xmin + 3] = true;
+                // self.yx_grid[ymin + 4][xmin + 3] = true;
+                // self.yx_grid[ymin + 5][xmin + 3] = true;
             }
             _ => {}
         }
@@ -1829,8 +2015,9 @@ bind_interrupts!(struct Irqs {  //sets up the IRQ for the PIO, probably to pull 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
-    // let mut enable_accel = Output::new(p.PIN_29, Level::Low);
-    // enable_accel.set_high();
+    // let mut watchdog = Watchdog::new(p.WATCHDOG);
+    let mut enable_accel = Output::new(p.PIN_29, Level::Low);
+    enable_accel.set_high();
     let pio = p.PIO0; //this PIO object is one of the 4 PIO peripherals
     let Pio {
         //why is this capitalized?
@@ -1842,10 +2029,9 @@ async fn main(_spawner: Spawner) {
     let i2c_config = embassy_rp::i2c::Config::default();
     let mut i2c = embassy_rp::i2c::I2c::new_async(p.I2C1, p.PIN_23, p.PIN_22, Irqs, i2c_config);
 
-    let mut portb = [0];
-    let addr: u8 = 0x0C;
-    Timer::after_millis(1000).await;
-    select(Timer::after_millis(10000), i2c.write(addr, &[0x0F])).await;
+    let addr: u8 = 0x18;
+    // set ctrl register
+    i2c.write(addr, &[0x20, 0x57]).await;
 
     let prg = pio_asm!(
         //this program  is for moving data from TX to RX
@@ -1903,7 +2089,7 @@ async fn main(_spawner: Spawner) {
         &p17, &p18, &p19, &p20, &p21,
     ]);
     cfg.use_program(&common.load_program(&prg.program), &[]); // load the program instructions
-    cfg.clock_divider = (U56F8!(125_000_000) / 30_000).to_fixed(); //set the speed, I thing its 12,500Hz
+    cfg.clock_divider = (U56F8!(125_000_000) / 300_000).to_fixed(); //set the speed, I thing its 12,500Hz
     cfg.shift_in = ShiftConfig {
         //config for shift in data from the left into the TX
         auto_fill: true, //autofills the tx buffer when 32 bits shifted out
@@ -1918,8 +2104,6 @@ async fn main(_spawner: Spawner) {
     };
     sm.set_config(&cfg);
     sm.set_enable(true);
-
-    spawner.spawn(update(scene)).unwrap();
 
     let mut dma_out_ref = p.DMA_CH0;
 
@@ -1940,8 +2124,62 @@ async fn main(_spawner: Spawner) {
     }
 
     let tx = sm.tx(); // this is where the state machine interface is
+    let mut xh: [u8; 1] = [0];
+    let mut yh: [u8; 1] = [0];
+    let mut zh: [u8; 1] = [0];
+    let mut x_val: i8 = 0;
+    let mut y_val: i8 = 0;
+    let mut z_val: i8 = 0;
+    let mut x_negative: usize = 18;
+    let mut y_negative: usize = 18;
+    let mut z_negative: usize = 18;
+    let mut dot = Dot::new();
     loop {
-        screen.fill_index();
+        i2c.write_read(addr, &[0x29], &mut xh).await; // read accel data
+        i2c.write_read(addr, &[0x2B], &mut yh).await; // read accel data
+        // i2c.write_read(addr, &[0x2D], &mut zh).await; // read accel data
+
+        x_val = xh[0] as i8;
+        y_val = yh[0] as i8;
+        // z_val = zh[0] as i8;
+
+        // if x_val < 0 {
+        //     x_val = -x_val;
+        //     x_negative = 17;
+        // } else {
+        //     x_negative = 18;
+        // }
+        // if y_val < 0 {
+        //     y_val = -y_val;
+        //     y_negative = 17;
+        // } else {
+        //     y_negative = 18;
+        // }
+        // if z_val < 0 {
+        //     z_val = -z_val;
+        //     z_negative = 17;
+        // } else {
+        //     z_negative = 18;
+        // }
+        if y_val > 60 {
+            embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x00); // reboot to BOOTSEL
+        }
+        dot.accelerate((-y_val as f32) / 1000.0, (x_val as f32) / 1000.0);
+        screen.one_pixel(dot.grid_location);
+        // screen.fill_index();
+        // screen.disp_num(x_negative as usize, 0, 0);
+        // screen.disp_num((x_val / 100).unsigned_abs() as usize, 0, 4);
+        // screen.disp_num((x_val / 10 % 10).unsigned_abs() as usize, 0, 8);
+        // screen.disp_num((x_val % 10).unsigned_abs() as usize, 0, 12);
+        // screen.disp_num(y_negative as usize, 7, 0);
+        // screen.disp_num((y_val / 100).unsigned_abs() as usize, 7, 4);
+        // screen.disp_num((y_val / 10 % 10).unsigned_abs() as usize, 7, 8);
+        // screen.disp_num((y_val % 10).unsigned_abs() as usize, 7, 12);
+        // screen.disp_num(z_negative as usize, 14, 0);
+        // screen.disp_num((z_val / 100).unsigned_abs() as usize, 14, 4);
+        // screen.disp_num((z_val / 10 % 10).unsigned_abs() as usize, 14, 8);
+        // screen.disp_num((z_val % 10).unsigned_abs() as usize, 14, 12);
+
         screen.make_output();
         for _ in 0..3 {
             tx.dma_push(dma_out_ref.reborrow(), &screen.out_array, false)
@@ -1950,48 +2188,38 @@ async fn main(_spawner: Spawner) {
     }
 }
 
-// function simulate(){
-async fn simulate(scene: &mut Scene){
-// 		if (!scene.paused)
-    if (!scene.paused) {
-// 			scene.fluid.simulate(
-// 				scene.dt, scene.gravity, scene.flipRatio, scene.numPressureIters, scene.numParticleIters, 
-// 				scene.overRelaxation, scene.compensateDrift, scene.separateParticles,
-// 				scene.obstacleX, scene.obstacleY, scene.obstacleRadius, scene.colorFieldNr);
-        scene.fluid.simulate(
-            scene.dt, 
-            secene.gravity, 
-            scene.flipRatio, 
-            scene.numPressureIters, 
-            scene.numParticleIters, 
-            scene.overRelaxation, 
-            scene.compensateDrift, 
-            scene.separateParticles, 
-            scene.obstacleX, 
-            scene.obstacleY, 
-            scene.obstacleRadius);
-        
-// 			scene.frameNr++;
-            scene.frameNr += 1;
-    }
+struct Dot {
+    x: f32,
+    y: f32,
+    x_velocity: f32,
+    y_velocity: f32,
+    grid_location: (usize, usize),
 }
-#[embassy_executor::task]
-// 	function update() {
-async fn update(scene: Scene) {
-// 		simulate();
-    loop{
-        simulate(&mut scene).await;
-    // 		draw();
-        draw();
-    // 		requestAnimationFrame(update);
+impl Dot {
+    fn new() -> Dot {
+        Dot {
+            x: 0.0,
+            y: 0.0,
+            y_velocity: 0.0,
+            x_velocity: 0.0,
+            grid_location: (0, 0),
+        }
     }
-}
-	
-// 	setupScene();
-// 	update();
-
-fn draw(){
-
+    fn accelerate(&mut self, y_accel: f32, x_accel: f32) {
+        self.y_velocity += y_accel;
+        self.x_velocity += x_accel;
+        self.x += self.x_velocity;
+        self.y += self.y_velocity;
+        self.y = clamp(self.y, 0.0, 20.0);
+        self.x = clamp(self.x, 0.0, 20.0);
+        self.grid_location = (floorf(self.y) as usize, floorf(self.x) as usize);
+        if self.x == 0.0 || self.x == 20.0 {
+            self.x_velocity = 0.0
+        };
+        if self.y == 0.0 || self.y == 20.0 {
+            self.y_velocity = 0.0
+        };
+    }
 }
 
 #[panic_handler]
