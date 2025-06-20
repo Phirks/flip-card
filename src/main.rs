@@ -2162,9 +2162,9 @@ async fn main(_spawner: Spawner) {
         //     z_negative = 18;
         // }
         if y_val > 60 {
-            embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x00); // reboot to BOOTSEL
+            embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
         }
-        dot.accelerate((-y_val as f32) / 1000.0, (x_val as f32) / 1000.0);
+        dot.accelerate((-y_val as f32) / 10000.0, (x_val as f32) / 10000.0);
         screen.one_pixel(dot.grid_location);
         // screen.fill_index();
         // screen.disp_num(x_negative as usize, 0, 0);
@@ -2216,9 +2216,14 @@ impl Dot {
         if self.x == 0.0 || self.x == 20.0 {
             self.x_velocity = 0.0
         };
-        if self.y == 0.0 || self.y == 20.0 {
-            self.y_velocity = 0.0
+        if  self.y == 20.0 {
+            if self.y_velocity > 0.0 {
+                self.y_velocity = -self.y_velocity
+            }
         };
+        if self.y == 0.0 {
+            self.y_velocity = 0.0;
+        }
     }
 }
 
