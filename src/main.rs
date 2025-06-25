@@ -22,6 +22,7 @@ use embassy_rp::pio::program::pio_asm;
 use embassy_rp::pio::{Config, InterruptHandler, Pio, ShiftConfig, ShiftDirection};
 use embassy_rp::watchdog::*;
 use embassy_sync::watch;
+use embassy_time::Duration;
 use embassy_time::Timer;
 use embedded_hal_async::i2c::I2c;
 use fixed::traits::ToFixed;
@@ -2015,12 +2016,11 @@ bind_interrupts!(struct Irqs {  //sets up the IRQ for the PIO, probably to pull 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
-    // let mut watchdog = Watchdog::new(p.WATCHDOG);
+    let mut watchdog = Watchdog::new(p.WATCHDOG);
     let mut enable_accel = Output::new(p.PIN_29, Level::Low);
     enable_accel.set_high();
     let pio = p.PIO0; //this PIO object is one of the 4 PIO peripherals
     let Pio {
-        //why is this capitalized?
         mut common,
         sm0: mut sm,
         ..
@@ -2031,7 +2031,9 @@ async fn main(_spawner: Spawner) {
 
     let addr: u8 = 0x18;
     // set ctrl register
-    i2c.write(addr, &[0x20, 0x57]).await;
+    i2c.write(addr, &[0x20, 0x53]).await;
+    i2c.write(addr, &[0x23, 0x20]).await;
+    
 
     let prg = pio_asm!(
         //this program  is for moving data from TX to RX
@@ -2134,6 +2136,8 @@ async fn main(_spawner: Spawner) {
     let mut y_negative: usize = 18;
     let mut z_negative: usize = 18;
     let mut dot = Dot::new();
+    let mut y_counter: usize = 0;
+    watchdog.start(Duration::from_millis(500));
     loop {
         i2c.write_read(addr, &[0x29], &mut xh).await; // read accel data
         i2c.write_read(addr, &[0x2B], &mut yh).await; // read accel data
@@ -2161,10 +2165,20 @@ async fn main(_spawner: Spawner) {
         // } else {
         //     z_negative = 18;
         // }
-        if y_val > 60 {
-            embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
+        watchdog.feed();
+        if y_val > 5 {
+            y_counter += 1;
+            if y_counter > 100 {
+                embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
+                Timer::after_millis(3000);
+            }
         }
-        dot.accelerate((-y_val as f32) / 10000.0, (x_val as f32) / 10000.0);
+        else {
+                if y_counter > 0 {
+                y_counter -= 1;
+            }
+        }
+        dot.accelerate((y_val as f32) / 250.0, (x_val as f32) / 250.0);
         screen.one_pixel(dot.grid_location);
         // screen.fill_index();
         // screen.disp_num(x_negative as usize, 0, 0);
@@ -2206,15 +2220,22 @@ impl Dot {
         }
     }
     fn accelerate(&mut self, y_accel: f32, x_accel: f32) {
-        self.y_velocity += y_accel;
+        self.y_velocity -= y_accel;
         self.x_velocity += x_accel;
         self.x += self.x_velocity;
         self.y += self.y_velocity;
         self.y = clamp(self.y, 0.0, 20.0);
         self.x = clamp(self.x, 0.0, 20.0);
         self.grid_location = (floorf(self.y) as usize, floorf(self.x) as usize);
-        if self.x == 0.0 || self.x == 20.0 {
-            self.x_velocity = 0.0
+        if self.x == 0.0 {
+            if self.x_velocity < 0.0 {
+                self.x_velocity = -self.x_velocity * 0.4;
+            }
+        };
+        if self.x == 20.0 {
+            if self.x_velocity > 0.0 {
+                self.x_velocity = -self.x_velocity * 0.4;
+            }
         };
         if  self.y == 20.0 {
             if self.y_velocity > 0.0 {
