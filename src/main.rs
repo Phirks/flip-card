@@ -4,39 +4,48 @@
 #![allow(non_camel_case_types)]
 #![allow(unused)]
 #![allow(non_upper_case_globals)]
+use core::cell::Cell;
 use core::num;
-use embassy_executor::Spawner;
+use core::pin;
+use embassy_executor::{Executor, Spawner};
 use embassy_futures::select::select;
+use embassy_futures::select::{
+    Either::{self, First},
+    Select,
+};
 use embassy_rp::bind_interrupts;
+use embassy_rp::flash::{Async, ERASE_SIZE, FLASH_BASE};
 use embassy_rp::gpio;
+use embassy_rp::gpio::{Input, Pull};
 use embassy_rp::i2c;
 use embassy_rp::i2c::Config as I2C_Config;
+use embassy_rp::i2c::I2c;
 use embassy_rp::i2c::InterruptHandler as I2C_InterruptHandler;
 use embassy_rp::i2c::{AbortReason, Error};
+use embassy_rp::multicore::{Stack, spawn_core1};
 use embassy_rp::pac;
-use embassy_rp::pac::common::W;
 use embassy_rp::pac::rosc::regs::Count;
-use embassy_rp::peripherals::I2C1;
-use embassy_rp::peripherals::PIO0;
+use embassy_rp::peripherals::*;
 use embassy_rp::pio::program::pio_asm;
 use embassy_rp::pio::{Config, InterruptHandler, Pio, ShiftConfig, ShiftDirection};
 use embassy_rp::watchdog::*;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
 use embassy_sync::watch;
 use embassy_time::Duration;
 use embassy_time::Timer;
-use embedded_hal_async::i2c::I2c;
 use fixed::traits::ToFixed;
 use fixed_macro::types::U56F8;
 use gpio::{Level, Output};
 use heapless::Vec;
 use libm::{exp, floor, floorf, sin, sqrtf};
+use static_cell::StaticCell;
 // use {defmt_rtt as _, panic_probe as _};
 
 static max_particles_setting: usize = 400;
 static number_of_vertical_cells_setting: usize = 23;
 static number_of_horizontal_cells_setting: usize = 23;
-
-static max_particles_x2_setting: usize = max_particles_setting * 3;
+static max_particles_x2_setting: usize = max_particles_setting * 2;
 static max_particles_x3_setting: usize = max_particles_setting * 3;
 static number_of_cells_setting: usize =
     number_of_vertical_cells_setting * number_of_horizontal_cells_setting;
@@ -44,24 +53,31 @@ static number_of_cells_x2_setting: usize = number_of_cells_setting * 2;
 static number_of_cells_x3_setting: usize = number_of_cells_setting * 3;
 static canvas_height: f32 = number_of_vertical_cells_setting as f32;
 static canvas_width: f32 = number_of_horizontal_cells_setting as f32;
-// var canvas = document.getElementById("myCanvas");
-// var gl = canvas.getContext("webgl");
-// canvas.width = window.innerWidth - 20;
-// canvas.height = window.innerHeight - 20;
+static number_of_cells_setting_plus1: usize = number_of_cells_setting + 1;
 
-// canvas.focus();
+static mut CORE1_STACK: Stack<262144> = Stack::new();
+static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
+static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
+// static CHANNEL: Channel<CriticalSectionRawMutex, LedState, 1> = Channel::new();
+
+static FRAME_DATA_CHANNEL: Channel<CriticalSectionRawMutex, [[bool; 21]; 21], 1> = Channel::new();
+
+static ACCEL_DATA_CHANNEL: Channel<CriticalSectionRawMutex, [f32; 2], 1> = Channel::new();
 
 // var simHeight = 3.0;
-static simHeight: f32 = 3.0;
+static simHeight: f32 = 23.0;
 // var cScale = canvas.height / simHeight;
-static cScale: f32 = canvas_height / simHeight;
+// static cScale: f32 = canvas_height / simHeight;
 // var simWidth = canvas.width / cScale;
-static simWidth: f32 = canvas_width / cScale;
+static simWidth: f32 = 23.0;
 
 // var U_FIELD = 0;
 static U_FIELD: i32 = 0;
 // var V_FIELD = 1;
 static V_FIELD: i32 = 1;
+
+const ADDR_OFFSET: u32 = 0x100000;
+const FLASH_SIZE: usize = 2 * 1024 * 1024;
 
 static BIT21: u32 = 0b00000000001000000000000000000000; // pinout 19 1
 static BIT20: u32 = 0b00000000000100000000000000000000; // pinout 19 2
@@ -85,6 +101,12 @@ static BIT3: u32 = 0b00000000000000000000000000001000; // pinout 3 19
 static BIT2: u32 = 0b00000000000000000000000000000100; // pinout 2 20
 static BIT1: u32 = 0b00000000000000000000000000000010; // pinout 1 21
 static BIT0: u32 = 0b00000000000000000000000000000001; // pinout 1 21
+
+static FRAME_DATA_SIGNAL: embassy_sync::signal::Signal<CriticalSectionRawMutex, [[bool; 21]; 21]> =
+    embassy_sync::signal::Signal::new();
+
+static ACCEL_DATA_SIGNAL: embassy_sync::signal::Signal<CriticalSectionRawMutex, [f32; 2]> =
+    embassy_sync::signal::Signal::new();
 
 static BITS: [u32; 22] = [
     BIT21, BIT20, BIT19, BIT18, BIT17, BIT16, BIT15, BIT14, BIT13, BIT12, BIT11, BIT10, BIT9, BIT8,
@@ -178,30 +200,6 @@ static LOOKUP_TABLE: [[usize; 21]; 21] = [
     ],
 ];
 
-// static QR_CODE: [[u8; 21]; 21] = [
-//     [1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-// ];
-
 static QR_CODE: [[u8; 21]; 21] = [
     [
         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
@@ -268,11 +266,20 @@ static QR_CODE: [[u8; 21]; 21] = [
     ],
 ];
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Copy)]
 enum CellType {
     AIR_CELL,
     FLUID_CELL,
     SOLID_CELL,
+}
+
+struct BasicStruct {
+    basic_value: i32,
+}
+impl BasicStruct {
+    fn new() -> BasicStruct {
+        BasicStruct { basic_value: 1 }
+    }
 }
 
 struct FlipFluid {
@@ -294,56 +301,59 @@ struct FlipFluid {
     fNumCells: f32,
 
     /// an array of the cell positions 2*i is y coordinate, 2*i+1 is x coordinate
-    u: Vec<f32, number_of_cells_setting>,
+    u: [f32; number_of_cells_x2_setting],
 
     /// an array of the cell velocities 2*i is the vertical velocity, 2*i+1 is the horizontal velocity
-    v: Vec<f32, number_of_cells_setting>,
+    v: [f32; number_of_cells_x2_setting],
 
     /// this is an array of the amount the position will change in one time step 2*i is the
     /// y coordinate change and 2*i+1 is the x coordinate change
-    du: Vec<f32, number_of_cells_setting>,
+    du: [f32; number_of_cells_x2_setting],
 
     /// this is an array of the amount the velocity will change in one time step 2*i is the
     /// vertical velocity change and 2*i+1 is the horizontal velocity change.
-    dv: Vec<f32, number_of_cells_setting>,
+    dv: [f32; number_of_cells_x2_setting],
 
     /// this is an array of the previous iteration's particle position 2*i are y coordinates
     /// and 2*i+1 are x coordinates
-    prevU: Vec<f32, number_of_cells_setting>,
+    prevU: [f32; number_of_cells_x2_setting],
 
     /// this is an array of the previous iteration's particle velocity.  2*i are y vertical
     /// velocities and 2*i+1 are horizontal velocities.
-    prevV: Vec<f32, number_of_cells_setting>,
+    prevV: [f32; number_of_cells_x2_setting],
 
-    p: Vec<f32, number_of_cells_setting>,
-    s: Vec<f32, number_of_cells_setting>,
-    cellType: Vec<CellType, number_of_cells_setting>,
-    cellColor: Vec<f32, number_of_cells_x3_setting>,
+    p: [f32; number_of_cells_setting],
+    s: [f32; number_of_cells_setting],
+    cellType: [CellType; number_of_cells_setting],
 
     /// the max number of particles, used to size the arrays
     maxParticles: i32,
 
     /// the particle position, in meters, indexes 2*i are vertical, 2*i+1 are horizontal
-    particlePos: Vec<f32, max_particles_x2_setting>,
-
-    /// the particle color, in groups of 3 for RGB
-    particleColor: Vec<f32, max_particles_x3_setting>,
+    particlePos: [f32; max_particles_x2_setting],
 
     /// the particle velocity, in m/s, indexes 2*i are vertical, 2*i+1 are horizontal
-    particleVel: Vec<f32, max_particles_x2_setting>,
+    particleVel: [f32; max_particles_x2_setting],
 
-    particleDensity: Vec<f32, number_of_cells_setting>,
+    particleDensity: [f32; number_of_cells_setting],
     particleRestDensity: f32,
     particleRadius: f32,
 
+    /// pInvSpacing = 1.0 / (2.2 * particleRadius);
     pInvSpacing: f32,
+
+    /// the number of cells in the x direction
     pNumX: i32,
+
+    /// the number of cells in the y direction
     pNumY: i32,
+
+    /// the total number of cells in the array
     pNumCells: i32,
 
-    numCellParticles: Vec<i32, 30>,
-    firstCellParticle: Vec<i32, 32>,
-    cellParticleIds: Vec<i32, max_particles_setting>,
+    numCellParticles: [i32; number_of_cells_setting],
+    firstCellParticle: [i32; number_of_cells_setting_plus1],
+    cellParticleIds: [i32; max_particles_setting],
 
     /// the total number of particles in the system
     numParticles: i32,
@@ -372,47 +382,51 @@ impl FlipFluid {
         let fNumCells = (fNumX * fNumY);
 
         // this.u = new Float32Array(this.fNumCells);
-        let u = Vec::new();
+        let u = [0f32; number_of_cells_x2_setting];
         // this.v = new Float32Array(this.fNumCells);
-        let v = Vec::new();
+        let v = [0f32; number_of_cells_x2_setting];
         // this.du = new Float32Array(this.fNumCells);
-        let du = Vec::new();
+        let du = [0f32; number_of_cells_x2_setting];
         // this.dv = new Float32Array(this.fNumCells);
-        let dv = Vec::new();
+        let dv = [0f32; number_of_cells_x2_setting];
         // this.prevU = new Float32Array(this.fNumCells);
-        let prevU = Vec::new();
+        let prevU = [0f32; number_of_cells_x2_setting];
         // this.prevV = new Float32Array(this.fNumCells);
-        let prevV = Vec::new();
+        let prevV = [0f32; number_of_cells_x2_setting];
         // this.p = new Float32Array(this.fNumCells);
-        let p = Vec::new();
+        let p = [0f32; number_of_cells_setting];
         // this.s = new Float32Array(this.fNumCells);
-        let s = Vec::new();
+        let s = [0f32; number_of_cells_setting];
         // this.cellType = new Int32Array(this.fNumCells);
-        let cellType = Vec::new();
-        // this.cellColor = new Float32Array(3 * this.fNumCells);
-        let cellColor = Vec::new();
+        let cellType = [CellType::AIR_CELL; number_of_cells_setting];
         // this.particleRadius = particleRadius;
         // this.maxParticles = maxParticles;
         //maxParticles
         // this.particlePos = new Float32Array(2 * this.maxParticles);
-        let particlePos = Vec::new();
-        // this.particleColor = new Float32Array(3 * this.maxParticles);
-        let mut particleColor = Vec::new();
-        // for (var i = 0; i < this.maxParticles; i++)
-        // this.particleColor[3 * i + 2] = 1.0;
-        for i in 0..maxParticles {
-            particleColor[(3 * i + 2) as usize] = 1.0;
+        let mut particlePos = [0.0; max_particles_x2_setting];
+        let mut x_start: f32 = 0.0;
+        let mut y_start: f32 = 0.0;
+        let mut count: usize = 0;
+        for i in 1..21 {
+            for j in 1..21 {
+                particlePos[count * 2] = j as f32;
+                particlePos[count * 2 + 1] = i as f32;
+                count += 1;
+            }
         }
+        //
+
         // this.particleVel = new Float32Array(2 * this.maxParticles);
-        let particleVel = Vec::new();
+        let particleVel = [0.0; max_particles_x2_setting];
         // this.particleDensity = new Float32Array(this.fNumCells);
-        let particleDensity = Vec::new();
+        let particleDensity = [0f32; number_of_cells_setting];
         // this.particleRestDensity = 0.0;
         let particleRestDensity = 0.0f32;
 
         //particleRadius
         // this.pInvSpacing = 1.0 / (2.2 * particleRadius);
-        let pInvSpacing = 1.0 / (2.2 * particleRadius);
+        // let pInvSpacing = 1.0 / (2.2 * particleRadius); // original
+        let pInvSpacing = 1.0;
         // this.pNumX = Math.floor(width * this.pInvSpacing) + 1;
         let pNumX = floorf(width * pInvSpacing) as i32;
         // this.pNumY = Math.floor(height * this.pInvSpacing) + 1;
@@ -420,11 +434,11 @@ impl FlipFluid {
         // this.pNumCells = this.pNumX * this.pNumY;
         let pNumCells = pNumX * pNumY;
         // this.numCellParticles = new Int32Array(this.pNumCells);
-        let numCellParticles = Vec::new();
+        let numCellParticles = [0; number_of_cells_setting];
         // this.firstCellParticle = new Int32Array(this.pNumCells + 1);
-        let cellParticleIds = Vec::new();
+        let firstCellParticle = [0; number_of_cells_setting_plus1];
         // this.cellParticleIds = new Int32Array(maxParticles);
-        let firstCellParticle = Vec::new();
+        let cellParticleIds = [0; max_particles_setting];
         // this.numParticles = 0;
         let numParticles = 0i32;
 
@@ -444,10 +458,8 @@ impl FlipFluid {
             p,
             s,
             cellType,
-            cellColor,
             maxParticles,
             particlePos,
-            particleColor,
             particleVel,
             particleDensity,
             particleRestDensity,
@@ -475,15 +487,26 @@ impl FlipFluid {
     /// Vert_Pos_new = Vert_Pos_old + Vert_Vel_New * dt
     ///
     /// Horiz_Pos_new = Horz_Pos_old + Horiz_Vel_New * dt
-    fn integrateParticles(&mut self, dt: f32, gravity: f32) {
+    fn integrateParticles(&mut self, dt: f32, yGravity: f32, xGravity: f32) {
         // for (var i = 0; i < this.numParticles; i++) {
+
         for i in 0..self.numParticles {
+            self.particleVel[(2 * i) as usize] += dt * xGravity;
             // this.particleVel[2 * i + 1] += dt * gravity;
-            self.particleVel[(2 * i + 1) as usize] += dt * gravity;
+            self.particleVel[(2 * i + 1) as usize] += dt * yGravity;
             // this.particlePos[2 * i] += this.particleVel[2 * i] * dt;
             self.particlePos[(2 * i) as usize] += self.particleVel[(2 * i) as usize] * dt;
             // this.particlePos[2 * i + 1] += this.particleVel[2 * i + 1] * dt;
             self.particlePos[(2 * i + 1) as usize] += self.particleVel[(2 * i + 1) as usize] * dt;
+        }
+    }
+
+    fn showParticles(&mut self) {
+        for i in 0..self.numParticles {
+            let mut cell_location: (usize, usize) = (0, 0);
+            cell_location.0 = floorf(self.particlePos[2 * i as usize]) as usize;
+            cell_location.1 = floorf(self.particlePos[2 * i as usize + 1]) as usize;
+            self.cellType[cell_location.1 * 23 + cell_location.0] = CellType::FLUID_CELL;
         }
     }
     // pushParticlesApart(numIters)
@@ -492,13 +515,12 @@ impl FlipFluid {
     ///
     ///
     fn pushParticlesApart(&mut self, numIters: i32) {
-        // var colorDiffusionCoeff = 0.001;
-        let colorDiffusionCoeff: f32 = 0.001;
         // // count particles per cell
         // this.numCellParticles.fill(0);
         self.numCellParticles.fill(0);
 
         // for (var i = 0; i < this.numParticles; i++) {
+        /// store all the particle positions and multiply by the grid spacing, make sure it's in the grid.
         for i in 0..self.numParticles {
             // var x = this.particlePos[2 * i];
             let x: f32 = self.particlePos[(2 * i) as usize];
@@ -506,9 +528,9 @@ impl FlipFluid {
             let y: f32 = self.particlePos[(2 * i + 1) as usize];
 
             // var xi = clamp(Math.floor(x * this.pInvSpacing), 0, this.pNumX - 1);
-            let xi = clamp(floorf(x * self.pInvSpacing) as i32, 0, self.pNumX - 1);
+            let xi = clamp(floorf(x) as i32, 0, self.pNumX - 1);
             // var yi = clamp(Math.floor(y * this.pInvSpacing), 0, this.pNumY - 1);
-            let yi = clamp(floorf(y * self.pInvSpacing) as i32, 0, self.pNumY - 1);
+            let yi = clamp(floorf(y) as i32, 0, self.pNumY - 1);
             // var cellNr = xi * this.pNumY + yi;
             let celNr = xi * self.pNumY + yi;
             // this.numCellParticles[cellNr]++;
@@ -540,13 +562,13 @@ impl FlipFluid {
             let y = self.particlePos[(2 * i + 1) as usize];
 
             // var xi = clamp(Math.floor(x * this.pInvSpacing), 0, this.pNumX - 1);
-            let xi = clamp(floorf(x * self.pInvSpacing) as i32, 0, self.pNumX);
+            let xi = clamp(floorf(x * self.pInvSpacing) as i32, 1, self.pNumX - 2);
             // var yi = clamp(Math.floor(y * this.pInvSpacing), 0, this.pNumY - 1);
-            let yi = clamp(floorf(y * self.pInvSpacing) as i32, 0, self.pNumY);
+            let yi = clamp(floorf(y * self.pInvSpacing) as i32, 1, self.pNumY - 2);
             // var cellNr = xi * this.pNumY + yi;
             let cellNr = xi * self.pNumY + yi;
             // this.firstCellParticle[cellNr]--;
-            self.firstCellParticle[cellNr as usize];
+            // self.firstCellParticle[cellNr as usize] -= 1;
             // this.cellParticleIds[this.firstCellParticle[cellNr]] = i;
             self.cellParticleIds[self.firstCellParticle[cellNr as usize] as usize] = i;
         }
@@ -631,24 +653,6 @@ impl FlipFluid {
                             self.particlePos[(2 * id) as usize] += dx;
                             // this.particlePos[2 * id + 1] += dy;
                             self.particlePos[(2 * id + 1) as usize] += dy;
-
-                            // // diffuse colors
-
-                            // for (var k = 0; k < 3; k++) {
-                            for k in 0..3 {
-                                // var color0 = this.particleColor[3 * i + k];
-                                let color0 = self.particleColor[(3 * i + k) as usize];
-                                // var color1 = this.particleColor[3 * id + k];
-                                let color1 = self.particleColor[(3 * id + k) as usize];
-                                // var color = (color0 + color1) * 0.5;
-                                let color = (color0 + color1) * 0.5f32;
-                                // this.particleColor[3 * i + k] = color0 + (color - color0) * colorDiffusionCoeff;
-                                self.particleColor[(3 * i + k) as usize] =
-                                    color0 + (color - color0) * colorDiffusionCoeff;
-                                // this.particleColor[3 * id + k] = color1 + (color - color1) * colorDiffusionCoeff;
-                                self.particleColor[(3 * id + k) as usize] =
-                                    color1 + (color - color1) * colorDiffusionCoeff;
-                            }
                         }
                     }
                 }
@@ -659,32 +663,30 @@ impl FlipFluid {
     // handleParticleCollisions(obstacleX, obstacleY, obstacleRadius) {
     fn handleParticleCollisions(
         &mut self,
-        obstacleX: f32,
-        obstacleY: f32,
-        obstacleRadius: f32,
-        scene: &Scene,
+        // obstacleX: f32,
+        // obstacleY: f32,
+        // obstacleRadius: f32,
+        // scene: &Scene,
     ) {
         // var h = 1.0 / this.fInvSpacing;
-        let h = 1.0 / self.fInvSpacing;
         // var r = this.particleRadius;
-        let r = self.particleRadius;
         // var or = obstacleRadius;
-        let or = obstacleRadius;
+        // let or = obstacleRadius;
         // var or2 = or * or;
-        let or2 = or * or;
+        // let or2 = or * or;
         // var minDist = obstacleRadius + r;
-        let minDist = obstacleRadius + r;
+        // let minDist = obstacleRadius + r;
         // var minDist2 = minDist * minDist;
-        let minDist2 = minDist * minDist;
+        // let minDist2 = minDist * minDist;
 
         // var minX = h + r;
-        let minX = h + r;
+        let minX = 1.0;
         // var maxX = (this.fNumX - 1) * h - r;
-        let maxX = (self.fNumX - 1.0) * h - r;
+        let maxX = 21.0;
         // var minY = h + r;
-        let minY = h + r;
+        let minY = 1.0;
         // var maxY = (this.fNumY - 1) * h - r;
-        let maxY = (self.fNumY - 1.0) * h - r;
+        let maxY = 21.0;
 
         // for (var i = 0; i < this.numParticles; i++) {
         for i in 0..self.numParticles {
@@ -694,30 +696,30 @@ impl FlipFluid {
             let mut y = self.particlePos[(2 * i + 1) as usize];
 
             // var dx = x - obstacleX;
-            let dx = x - obstacleX;
+            // let dx = x - obstacleX;
             // var dy = y - obstacleY;
-            let dy = y - obstacleY;
+            // let dy = y - obstacleY;
             // var d2 = dx * dx + dy * dy;
-            let d2 = dx + dy * dy;
+            // let d2 = dx + dy * dy;
 
             // // obstacle collision
 
             // if (d2 < minDist2) {
-            if d2 < minDist2 {
-                // // var d = Math.sqrt(d2);
-                let d = sqrtf(d2);
-                // // var s = (minDist - d) / d;
-                let s = (minDist - d) / d;
-                // // x += dx * s;
-                x += dx * s;
-                // // y += dy * s;
-                y += dy * s;
+            // if d2 < minDist2 {
+            // // var d = Math.sqrt(d2);
+            // let d = sqrtf(d2);
+            // // var s = (minDist - d) / d;
+            // let s = (minDist - d) / d;
+            // // x += dx * s;
+            // x += dx * s;
+            // // y += dy * s;
+            // y += dy * s;
 
-                // this.particleVel[2 * i] = scene.obstacleVelX;
-                self.particleVel[(2 * i) as usize] = scene.obstacleVelX;
-                // this.particleVel[2 * i + 1] = scene.obstacleVelY;
-                self.particleVel[(2 * i + 1) as usize] = scene.obstacleVelY;
-            }
+            // this.particleVel[2 * i] = scene.obstacleVelX;
+            // self.particleVel[(2 * i) as usize] = scene.obstacleVelX;
+            // this.particleVel[2 * i + 1] = scene.obstacleVelY;
+            // self.particleVel[(2 * i + 1) as usize] = scene.obstacleVelY;
+            // }
 
             // // wall collisions
 
@@ -870,18 +872,24 @@ impl FlipFluid {
     /// transfer the particle velocities to the grid or vice versa
     fn transferVelocities(&mut self, toGrid: bool, flipRatio: f32) {
         // var n = this.fNumY;
+        /// clone of the number of cells in the y direction (fNumY)
         let n = self.fNumY;
         // var h = this.h;
+        /// clone of the cell spacing (self.h)
         let h = self.h;
         // var h1 = this.fInvSpacing;
+        /// the inverse of the cell spacing (1/h)
         let h1 = self.fInvSpacing;
         // var h2 = 0.5 * h;
+        /// half the size of a cell
         let h2 = 0.5 * h;
 
         // clone cell positions and velocities into buffers and clear the values
         // for each cell, check if s = 0.0 and call it a solid cell if it is and air cell if not.
         // for each particle store the x and y position and
         // if (toGrid) {
+        /// set all the cell types, self.s = 0.0 => solid, if any particles in cell => fluid, else => air
+        /// (also stores previous positions and velocities in prevU/prevV and clears du/dv/u/v)
         if toGrid {
             // this.prevU.set(this.u);
             self.prevU = self.u.clone();
@@ -898,6 +906,7 @@ impl FlipFluid {
             self.v.fill(0.0);
 
             // for (var i = 0; i < this.fNumCells; i++)
+            /// if s = 0.0 make it a solid cell, otherwise an air cell
             for i in 0..self.fNumCells as usize {
                 // this.cellType[i] = this.s[i] == 0.0 ? SOLID_CELL : AIR_CELL;
                 self.cellType[i] = if self.s[i] == 0.0 {
@@ -908,6 +917,7 @@ impl FlipFluid {
             }
 
             // for (var i = 0; i < this.numParticles; i++) {
+            /// for each particle, get the cell that it's in and if that's an air cell make it a fluid cell
             for i in 0..self.numParticles {
                 // var x = this.particlePos[2 * i];
                 let x = self.particlePos[(2 * i) as usize];
@@ -918,7 +928,7 @@ impl FlipFluid {
                 // var yi = clamp(Math.floor(y * h1), 0, this.fNumY - 1);
                 let yi = clamp(floorf(y * h1), 0.0, self.fNumY - 1.0);
                 // var cellNr = xi * n + yi;
-                let cellNr = xi * n + yi;
+                let cellNr = xi * n + yi; // use the cell coordinates to get the ID of the cell it is in.
                 // if (this.cellType[cellNr] == AIR_CELL)
                 if self.cellType[cellNr as usize] == CellType::AIR_CELL {
                     // this.cellType[cellNr] = FLUID_CELL;
@@ -928,25 +938,30 @@ impl FlipFluid {
         }
 
         // for (var component = 0; component < 2; component++) {
+
         for component in 0..2 {
+            // runs twice
             // var dx = component == 0 ? 0.0 : h2;
-            let dx = if component == 0 { 0.0 } else { h2 };
+            let dx = if component == 0 { 0.0 } else { h2 }; //dx is 0 if component =0, and half the cell spacing if not
             // var dy = component == 0 ? h2 : 0.0;
-            let dy = if component == 0 { h2 } else { 0.0 };
+            let dy = if component == 0 { h2 } else { 0.0 }; // dy is half the cell spacing if component=0 and 0 if not.
 
             // var f = component == 0 ? this.u : this.v;
+            // on component=0, f is a clone of position (self.u), and on component=1 its a clone of velocity self.v
             let mut f = if component == 0 {
                 self.u.clone()
             } else {
                 self.v.clone()
             };
             // var prevF = component == 0 ? this.prevU : this.prevV;
+            // on component = 0 prevF is a clone of prevU, and when component=1 it's a clone of prevV
             let prevF = if component == 0 {
                 self.prevU.clone()
             } else {
                 self.prevV.clone()
             };
             // var d = component == 0 ? this.du : this.dv;
+            // on component = 0, d is a clone of du (the change in position per time) and for component=1 it's dv (change in velocity over time)
             let mut d = if component == 0 {
                 self.du.clone()
             } else {
@@ -954,23 +969,41 @@ impl FlipFluid {
             };
 
             // for (var i = 0; i < this.numParticles; i++) {
+            // so here there are 2 possibilities:
+            // either component=0, dx=0  , dy=h/2, f=u.clone, prevF=prevU.clone, d=du.clone
+            //     or component=1, dx=h/2, dy=0  , f=v.clone, prevF=prevV.clone, d=dv.clone
+            //
+            // for each particle
             for i in 0..self.numParticles {
+                // store the particle position in x and y
                 // var x = this.particlePos[2 * i];
                 let mut x = self.particlePos[(2 * i) as usize];
                 // var y = this.particlePos[2 * i + 1];
                 let mut y = self.particlePos[(2 * i + 1) as usize];
 
+                // clamp the positions between the cell spacing and the cell spacing times the grid size
                 // x = clamp(x, h, (this.fNumX - 1) * h);
                 x = clamp(x, h, (self.fNumX - 1.0) * h);
                 // y = clamp(y, h, (this.fNumY - 1) * h);
                 y = clamp(y, h, (self.fNumY - 1.0) * h);
 
+                //Xp = (x-dx)
+                //Xcell = floor(xp/h) -> x0 the x grid location
+                //DeltaX/h = (Xp-Xcell*h)/h -> tx
+                // x1 is x0 + 1 clamped to grid
+
                 // var x0 = Math.min(Math.floor((x - dx) * h1), this.fNumX - 2);
-                let x0 = ((x - dx) * h1).min(self.fNumX - 2.0);
+                let x0 = floorf((x - dx) * h1).min(self.fNumX - 2.0);
                 // var tx = ((x - dx) - x0 * h) * h1;
                 let tx = ((x - dx) - x0 * h) * h1;
                 // var x1 = Math.min(x0 + 1, this.fNumX-2);
                 let x1 = (x0 + 1.0).min(self.fNumX - 2.0);
+
+                //Yp = (y-dy)
+                //Ycell = floor(yp/h) -> y0 the y grid location
+                //DeltaY/h = (Yp-Ycell*h)/h -> ty
+                // y1 is y0 + 1 clamped to grid
+
                 // var y0 = Math.min(Math.floor((y-dy)*h1), this.fNumY-2);
                 let y0 = floorf((y - dy) * h1).min(self.fNumY - 2.0);
                 // var ty = ((y - dy) - y0*h) * h1;
@@ -978,28 +1011,40 @@ impl FlipFluid {
                 // var y1 = Math.min(y0 + 1, this.fNumY-2);
                 let y1 = (y0 + 1.0).min(self.fNumY - 2.0);
 
+                //sx = 1-DeltaX/h
+                //sy = 1-DeltaY/h
                 // var sx = 1.0 - tx;
                 let sx = 1.0 - tx;
                 // var sy = 1.0 - ty;
                 let sy = 1.0 - ty;
 
+                // w1 = (1-DeltaX/h)(1-DeltaY/h) = sx * sy
+                // w2 = (DeltaX/h)(1-DeltaY/h) = tx * sy
+                // w3 = (DeltaX/h)(DeltaY/h) = tx * ty
+                // w4 = (1-DeltaX/h)(DeltaY/h) = sx * ty
+
                 // var d0 = sx*sy;
+                /// w1
                 let d0 = sx * sy;
                 // var d1 = tx*sy;
+                /// w2
                 let d1 = tx * sy;
                 // var d2 = tx*ty;
+                /// w3
                 let d2 = tx * ty;
                 // var d3 = sx*ty;
+                /// w4
                 let d3 = sx * ty;
 
+                // the x grid location times the number of cells in the y direction + the y grid location
                 // var nr0 = x0*n + y0;
-                let nr0 = x0 * n + y0;
+                let nr0 = x0 * n + y0; // q1, location of bottom left corner
                 // var nr1 = x1*n + y0;
-                let nr1 = x1 * n + y0;
+                let nr1 = x1 * n + y0; // q2, location of bottom right corner
                 // var nr2 = x1*n + y1;
-                let nr2 = x1 * n + y1;
+                let nr2 = x1 * n + y1; // q3, location of top right corner
                 // var nr3 = x0*n + y1;
-                let nr3 = x0 * n + y1;
+                let nr3 = x0 * n + y1; // q4, location of top left corner
 
                 // if (toGrid) {
                 if toGrid {
@@ -1235,165 +1280,18 @@ impl FlipFluid {
         }
     }
 
-    // updateParticleColors() {
-    fn updateParticleColors(&mut self) {
-        // // for (var i = 0; i < this.numParticles; i++) {
-        // // this.particleColor[3 * i] *= 0.99;
-        // // this.particleColor[3 * i + 1] *= 0.99
-        // // this.particleColor[3 * i + 2] =
-        // // clamp(this.particleColor[3 * i + 2] + 0.001, 0.0, 1.0)
-        // // }
-
-        // // return;
-
-        // var h1 = this.fInvSpacing;
-        let h1 = self.fInvSpacing;
-
-        // for (var i = 0; i < this.numParticles; i++) {
-        for i in 0..self.numParticles as usize {
-            // var s = 0.01;
-            let s: f32 = 0.01;
-            // this.particleColor[3 * i] = clamp(this.particleColor[3 * i] - s, 0.0, 1.0);
-            self.particleColor[(3 * i)] = clamp(self.particleColor[(3 * i)] - s, 0.0, 1.0);
-            // this.particleColor[3 * i + 1] = clamp(this.particleColor[3 * i + 1] - s, 0.0, 1.0);
-            self.particleColor[(3 * i + 1)] = clamp(self.particleColor[3 * i + 1] - s, 0.0, 1.0);
-            // this.particleColor[3 * i + 2] = clamp(this.particleColor[3 * i + 2] + s, 0.0, 1.0);
-            self.particleColor[(3 * i + 1)] = clamp(self.particleColor[3 * i + 2] + s, 0.0, 1.0);
-
-            // var x = this.particlePos[2 * i];
-            let x = self.particlePos[2 * i];
-            // var y = this.particlePos[2 * i + 1];
-            let y = self.particlePos[2 * i + 1];
-            // var xi = clamp(Math.floor(x * h1), 1, this.fNumX - 1);
-            let xi = clamp(floorf(x * h1), 1.0, self.fNumX - 1.0);
-            // var yi = clamp(Math.floor(y * h1), 1, this.fNumY - 1);
-            let yi = clamp(floorf(y * h1), 1.0, self.fNumY - 1.0);
-            // var cellNr = xi * this.fNumY + yi;
-            let cellNr = xi * self.fNumY + yi;
-
-            // var d0 = this.particleRestDensity;
-            let d0 = self.particleRestDensity;
-
-            // if (d0 > 0.0) {
-            if d0 > 0.0 {
-                // var relDensity = this.particleDensity[cellNr] / d0;
-                let relDensity = self.particleDensity[cellNr as usize] / d0;
-                // if (relDensity < 0.7) {
-                if relDensity < 0.7 {
-                    // var s = 0.8;
-                    let s = 0.8;
-                    // this.particleColor[3 * i] = s;
-                    self.particleColor[3 * i] = s;
-                    // this.particleColor[3 * i + 1] = s;
-                    self.particleColor[3 * i + 1] = s;
-                    // this.particleColor[3 * i + 2] = 1.0;
-                    self.particleColor[3 * i + 2] = 1.0;
-                }
-            }
-        }
-    }
-
-    // setSciColor(cellNr, val, minVal, maxVal) {
-    fn setSciColor(&mut self, cellNr: usize, val: f32, minVal: f32, maxVal: f32) {
-        // val = Math.min(Math.max(val, minVal), maxVal- 0.0001);
-        let mut val = val.max(minVal).min(maxVal - 0.0001);
-        // var d = maxVal - minVal;
-        let d = maxVal - minVal;
-        // val = d == 0.0 ? 0.5 : (val - minVal) / d;
-        let val = if d == 0.0 { 0.5 } else { (val - minVal) / d };
-        // var m = 0.25;
-        let m: f32 = 0.25;
-        // var num = Math.floor(val / m);
-        let num = floorf(val / m);
-        // var s = (val - num * m) / m;
-        let s = (val - num * m) / m;
-        // var r, g, b;
-        let mut r: f32 = 0.0;
-        let mut g: f32 = 0.0;
-        let mut b: f32 = 0.0;
-
-        // switch (num) {
-        match num {
-            // case 0 : r = 0.0; g = s; b = 1.0; break;
-            0.0 => {
-                r = 0.0;
-                g = s;
-                b = 1.0;
-            }
-            // case 1 : r = 0.0; g = 1.0; b = 1.0-s; break;
-            1.0 => {
-                r = 0.0;
-                g = 1.0;
-                b = 1.0 - s;
-            }
-            // case 2 : r = s; g = 1.0; b = 0.0; break;
-            2.0 => {
-                r = s;
-                g = 1.0;
-                b = 0.0;
-            }
-            // case 3 : r = 1.0; g = 1.0 - s; b = 0.0; break;
-            3.0 => {
-                r = 1.0;
-                g = 1.0 - s;
-                b = 0.0;
-            }
-            _ => {}
-        }
-
-        // this.cellColor[3 * cellNr] = r;
-        self.cellColor[3 * cellNr as usize] = r;
-        // this.cellColor[3 * cellNr + 1] = g;
-        self.cellColor[3 * cellNr as usize + 1] = g;
-        // this.cellColor[3 * cellNr + 2] = b;
-        self.cellColor[3 * cellNr as usize + 2] = b;
-    }
-
-    // updateCellColors() {
-    fn updateCellColors(&mut self) {
-        // this.cellColor.fill(0.0);
-        self.cellColor.fill(0.0);
-
-        // for (var i = 0; i < this.fNumCells; i++) {
-        for i in 0..self.fNumCells as usize {
-            // if (this.cellType[i] == SOLID_CELL) {
-            if self.cellType[i] == CellType::SOLID_CELL {
-                // this.cellColor[3*i] = 0.5;
-                self.cellColor[3 * i] = 0.5;
-                // this.cellColor[3*i + 1] = 0.5;
-                self.cellColor[3 * i + 1] = 0.5;
-                // this.cellColor[3*i + 2] = 0.5;
-                self.cellColor[3 * i + 2] = 0.5;
-            }
-            // else if (this.cellType[i] == FLUID_CELL) {
-            else if self.cellType[i] == CellType::FLUID_CELL {
-                // var d = this.particleDensity[i];
-                let mut d = self.particleDensity[i];
-                // if (this.particleRestDensity > 0.0)
-                if self.particleRestDensity > 0.0 {
-                    // d /= this.particleRestDensity;
-                    d /= self.particleRestDensity;
-                }
-                // this.setSciColor(i, d, 0.0, 2.0);
-                self.setSciColor(i, d, 0.0, 2.0);
-            }
-        }
-    }
-
     // simulate(dt, gravity, flipRatio, numPressureIters, numParticleIters, overRelaxation, compensateDrift, separateParticles, obstacleX, abstacleY, obstacleRadius) {
     fn simulate(
         &mut self,
         dt: f32,
-        gravity: f32,
+        xGravity: f32,
+        yGravity: f32,
         flipRatio: f32,
         numPressureIters: i32,
         numParticleIters: i32,
         overRelaxation: f32,
         compensateDrift: bool,
         separateParticles: bool,
-        obstacleX: f32,
-        obstacleY: f32,
-        obstacleRadius: f32,
     ) {
         // var scene =
 
@@ -1405,49 +1303,26 @@ impl FlipFluid {
         // for (var step = 0; step < numSubSteps; step++) {
         for i in 0..numSubSteps as usize {
             // this.integrateParticles(sdt, gravity);
-            self.integrateParticles(sdt, gravity);
+            self.integrateParticles(sdt, yGravity, xGravity);
             // if (separateParticles)
             if separateParticles {
                 // this.pushParticlesApart(numParticleIters);
                 self.pushParticlesApart(numParticleIters);
             }
-            // this.handleParticleCollisions(obstacleX, abstacleY, obstacleRadius)
-            //           self.handleParticleCollisions(obstacleX, obstacleY, obstacleRadius, &scene);
-            // this.transferVelocities(true);
-            self.transferVelocities(true, 1.9);
-            // this.updateParticleDensity();
-            self.updateParticleDensity();
-            // this.solveIncompressibility(numPressureIters, sdt, overRelaxation, compensateDrift);
-            self.solveIncompressibility(numPressureIters, sdt, overRelaxation, compensateDrift);
-            // this.transferVelocities(false, flipRatio);
-            self.transferVelocities(false, flipRatio);
+            // // this.handleParticleCollisions(obstacleX, abstacleY, obstacleRadius)
+            self.handleParticleCollisions();
+            // // this.transferVelocities(true);
+            // self.transferVelocities(true, 1.9);
+            // // this.updateParticleDensity();
+            // self.updateParticleDensity();
+            // // this.solveIncompressibility(numPressureIters, sdt, overRelaxation, compensateDrift);
+            // self.solveIncompressibility(numPressureIters, sdt, overRelaxation, compensateDrift);
+            // // this.transferVelocities(false, flipRatio);
+            // self.transferVelocities(false, flipRatio);
+            self.showParticles();
         }
 
-        // this.updateParticleColors();
-        self.updateParticleColors();
-        // this.updateCellColors();
-        self.updateCellColors();
-
         // }
-    }
-}
-
-// function clamp(x, min, max) {
-fn clamp<T: PartialOrd>(x: T, min: T, max: T) -> T {
-    // if (x < min)
-    if x < min {
-        // return min;
-        min
-    }
-    // else if (x > max)
-    else if x > max {
-        // return max;
-        max
-    }
-    // else
-    else {
-        // return x;
-        x
     }
 }
 
@@ -1456,7 +1331,8 @@ enum FluidType {
 }
 
 struct Scene {
-    gravity: f32,
+    xGravity: f32,
+    yGravity: f32,
     dt: f32,
     flipRatio: f32,
     numPressureIters: i32,
@@ -1465,31 +1341,24 @@ struct Scene {
     overRelaxation: f32,
     compensateDrift: bool,
     separateParticles: bool,
-    obstacleX: f32,
-    obstacleY: f32,
-    obstacleRadius: f32,
     paused: bool,
-    showObstacle: bool,
-    obstacleVelX: f32,
-    obstacleVelY: f32,
-    showParticles: bool,
-    showGrid: bool,
     fluid: FlipFluid,
 }
 
 impl Scene {
     fn setupScene() -> Scene {
         // gravity : -9.81,
-        let gravity = -9.81;
+        let xGravity = 0.0;
+        let yGravity = 0.0;
         // // gravity : 0.0,
-        // dt : 1.0 / 120.0,
-        let dt = 1.0 / 120.0;
+        // // dt : 1.0 / 120.0,
+        // let dt = 1.0 / 120.0;
         // flipRatio : 0.9,
         let flipRatio = 0.9;
-        // numPressureIters : 100,
-        let numPressureIters = 100;
-        // numParticleIters : 2,
-        let numParticleIters = 2;
+        // // numPressureIters : 100,
+        // let numPressureIters = 100;
+        // // numParticleIters : 2,
+        // let numParticleIters = 2;
         // frameNr : 0,
         let frameNr = 0;
         // overRelaxation : 1.9,
@@ -1498,40 +1367,20 @@ impl Scene {
         let compensateDrift = true;
         // separateParticles : true,
         let separateParticles = true;
-        // obstacleX : 0.0,
-        let obstacleX = 0.0;
-        // obstacleY : 0.0,
-        let obstacleY = 0.0;
-        // obstacleRadius: 0.15,
-        let obstacleRadius = 0.15;
         // paused: true,
-        let paused = true;
-        // showObstacle: true,
-        let showObstacle = true;
-        // obstacleVelX: 0.0,
-        let obstacleVelX = 0.0;
-        // obstacleVelY: 0.0,
-        let obstacleVelY = 0.0;
-        // showParticles: true,
-        let showParticles = true;
-        // showGrid: false,
-        let showGrid = false;
-        // fluid: null
+        let paused = false;
 
-        // function setupScene() {
-        // scene.obstacleRadius = 0.15;
-        let obstacleRadius = 0.15;
         // scene.overRelaxation = 1.9;
         let overRelaxation = 1.9;
         // scene.dt = 1.0 / 60.0;
         let dt = 1.0 / 60.0;
         // scene.numPressureIters = 50;
-        let numPressureIters = 50;
+        let numPressureIters = 30;
         // scene.numParticleIters = 2;
         let numParticleIters = 2;
 
         // var res = 100;
-        let res = 100.0;
+        let res = 23.0;
         // var tankHeight = 1.0 * simHeight;
         let tankHeight = 1.0 * simHeight;
         // var tankWidth = 1.0 * simWidth;
@@ -1551,7 +1400,7 @@ impl Scene {
         // // compute number of particles
 
         // var r = 0.3 * h; // particle radius w.r.t. cell size
-        let r = 0.3 * h;
+        let r = 0.5 * h;
         // var dx = 2.0 * r;
         let dx = 2.0 * r;
         // var dy = Math.sqrt(3.0) / 2.0 * dx;
@@ -1566,11 +1415,13 @@ impl Scene {
 
         // // create fluid
 
+        // flash.blocking_write(reset_count_location, &[10u8]);
         // f = scene.fluid = new FlipFluid(density, tankWidth, tankHeight, h, r, maxParticles);
         let fluid = FlipFluid::new(density, tankWidth, tankHeight, h, r, maxParticles);
 
         Scene {
-            gravity,
+            xGravity,
+            yGravity,
             dt,
             flipRatio,
             numPressureIters,
@@ -1579,15 +1430,7 @@ impl Scene {
             overRelaxation,
             compensateDrift,
             separateParticles,
-            obstacleX,
-            obstacleY,
-            obstacleRadius,
             paused,
-            showObstacle,
-            obstacleVelX,
-            obstacleVelY,
-            showParticles,
-            showGrid,
             fluid,
         }
         // // create particles
@@ -2013,28 +1856,224 @@ bind_interrupts!(struct Irqs {  //sets up the IRQ for the PIO, probably to pull 
     I2C1_IRQ => I2C_InterruptHandler<I2C1>;
 });
 
-#[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+#[cortex_m_rt::entry]
+fn main() -> ! {
+    // define all the peripherals and pins
     let p = embassy_rp::init(Default::default());
+    let mut i2c: I2c<'static, I2C1, i2c::Async> =
+        embassy_rp::i2c::I2c::new_async(p.I2C1, p.PIN_23, p.PIN_22, Irqs, Default::default());
     let mut watchdog = Watchdog::new(p.WATCHDOG);
     let mut enable_accel = Output::new(p.PIN_29, Level::Low);
+    let pio: embassy_rp::Peri<'static, PIO0> = p.PIO0; //this PIO object is one of the 4 PIO peripherals
+    let mut dma_out_ref: embassy_rp::Peri<'static, DMA_CH0> = p.DMA_CH0;
+    let accel_interrupt_1 = Input::new(p.PIN_24, Pull::Up);
+    let accel_interrupt_2 = Input::new(p.PIN_25, Pull::Up);
+    // Timer::after_millis(10).await;
+
+    // start up the peripherals
+    let mut sm = setup_pio(
+        pio, p.PIN_0, p.PIN_1, p.PIN_2, p.PIN_3, p.PIN_4, p.PIN_5, p.PIN_6, p.PIN_7, p.PIN_8,
+        p.PIN_9, p.PIN_10, p.PIN_11, p.PIN_12, p.PIN_13, p.PIN_14, p.PIN_15, p.PIN_16, p.PIN_17,
+        p.PIN_18, p.PIN_19, p.PIN_20, p.PIN_21,
+    );
     enable_accel.set_high();
-    let pio = p.PIO0; //this PIO object is one of the 4 PIO peripherals
+    let mut screen = Screen {
+        yx_grid: [[false; 21]; 21],
+        index_grid: [false; 484],
+        out_array: [0; 484],
+    };
+
+    let mut flash = embassy_rp::flash::Flash::<_, Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH1);
+    let mut read_buff = [1u8; 1];
+    let reset_count_location = 0 + ADDR_OFFSET;
+
+    // flash.blocking_write(reset_count_location, &[10u8]);
+    // Timer::after_millis(10).await;
+    // flash.blocking_read(reset_count_location, &mut read_buff);
+    // if read_buff[0] == 0 {
+    //     Timer::after_millis(10_000).await;
+    // } else {
+    //     Timer::after_millis(20_000).await;
+    //     read_buff[0] -= 1;
+    //     flash.blocking_write(reset_count_location, &read_buff);
+    // }
+    watchdog.start(Duration::from_millis(500));
+    // spawn background tasks
+
+    spawn_core1(
+        p.CORE1,
+        unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
+        move || {
+            let executor1 = EXECUTOR1.init(Executor::new());
+            executor1.run(|spawner| spawner.spawn(simulation_update()).unwrap())
+        },
+    );
+
+    let executor0 = EXECUTOR0.init(Executor::new());
+    executor0.run(|spawner| {
+        spawner
+            .spawn(monitor_accelerometer(
+                i2c,
+                accel_interrupt_1,
+                accel_interrupt_2,
+            ))
+            .unwrap();
+        spawner
+            .spawn(drive_screen(watchdog, screen, sm, dma_out_ref))
+            .unwrap()
+    });
+}
+
+#[embassy_executor::task(pool_size = 1)]
+async fn drive_screen(
+    mut watchdog: Watchdog,
+    mut screen: Screen,
+    mut sm: embassy_rp::pio::StateMachine<'static, PIO0, 0>,
+    mut dma_out_ref: embassy_rp::Peri<'static, DMA_CH0>,
+) {
+    let tx = sm.tx();
+    let mut frame_count: u128 = 0;
+    loop {
+        Timer::after_millis(3).await;
+        watchdog.feed();
+        if FRAME_DATA_SIGNAL.signaled() {
+            screen.yx_grid = FRAME_DATA_SIGNAL.wait().await;
+        }
+        screen.fill_index();
+        screen.make_output();
+        tx.dma_push(dma_out_ref.reborrow(), &screen.out_array, false)
+            .await;
+        frame_count += 1;
+        if frame_count >= 10_000 {
+            // flash.blocking_write(reset_count_location, &[10u8]);
+            embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
+            Timer::after_millis(3000).await;
+        }
+    }
+}
+
+#[embassy_executor::task(pool_size = 1)]
+async fn monitor_accelerometer(
+    mut i2c: I2c<'static, I2C1, i2c::Async>,
+    interrupt_1: Input<'static>,
+    interrupt_2: Input<'static>,
+) {
+    //setup accelerometer
+    let addr: u8 = 0x18;
+    let dt: f32 = 1.0 / 100.0; // 1/Hz,
+    let accel_scale_max: f32 = 9.81 * 8.0; // m/s²
+    i2c.blocking_write(addr, &[0x20, 0x53]);
+    i2c.blocking_write(addr, &[0x23, 0x20]);
+    //read accelerometer
+    let mut xh: [u8; 1] = [0];
+    let mut yh: [u8; 1] = [0];
+    let mut zh: [u8; 1] = [0];
+    let mut x_val: i8 = 0;
+    let mut y_val: i8 = 0;
+    let mut normalized_x_accel: f32 = 0.0;
+    let mut normalized_y_accel: f32 = 0.0;
+    let mut y_counter: usize = 0;
+    loop {
+        Timer::after_millis(10);
+        i2c.write_read_async(addr, [0x29], &mut xh).await; // read accel data
+        i2c.write_read_async(addr, [0x2B], &mut yh).await; // read accel data
+        x_val = xh[0] as i8;
+        y_val = yh[0] as i8;
+        normalized_x_accel = (accel_scale_max * (x_val as f32) / 128.0) / dt;
+        normalized_y_accel = (accel_scale_max * (y_val as f32) / 128.0) / dt;
+        if y_val > 15 {
+            y_counter += 1;
+            if y_counter > 200 {
+                embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
+                Timer::after_millis(3000).await;
+            }
+        } else {
+            if y_counter > 0 {
+                y_counter -= 1;
+            }
+        }
+        ACCEL_DATA_SIGNAL.signal([normalized_x_accel, -normalized_y_accel]);
+    }
+}
+
+#[embassy_executor::task]
+async fn simulation_update() {
+    // embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
+    let mut scene = Scene::setupScene();
+    scene.fluid.numParticles = 50;
+    loop {
+        if let First(accel_measurment) =
+            select(ACCEL_DATA_SIGNAL.wait(), Timer::after_millis(10)).await
+        {
+            scene.xGravity = accel_measurment[0];
+            scene.yGravity = accel_measurment[1];
+        }
+        scene.fluid.cellType.fill(CellType::AIR_CELL);
+        simulate(&mut scene).await;
+        draw(&scene).await;
+    }
+}
+
+async fn simulate(scene: &mut Scene) {
+    if !scene.paused {
+        scene.fluid.simulate(
+            scene.dt,
+            scene.xGravity,
+            scene.yGravity,
+            scene.flipRatio,
+            scene.numPressureIters,
+            scene.numParticleIters,
+            scene.overRelaxation,
+            scene.compensateDrift,
+            scene.separateParticles,
+        );
+        scene.frameNr += 1;
+    }
+}
+
+async fn draw(scene: &Scene) {
+    let mut output_frame: [[bool; 21]; 21] = [[false; 21]; 21];
+    for i in 1..22 {
+        for j in 1..22 {
+            if scene.fluid.cellType[i * 23 + j] == CellType::FLUID_CELL {
+                output_frame[i - 1][j - 1] = true;
+            }
+        }
+    }
+
+    FRAME_DATA_SIGNAL.signal(output_frame);
+}
+
+fn setup_pio(
+    pio: embassy_rp::Peri<'static, PIO0>,
+    pin0: embassy_rp::Peri<'static, PIN_0>,
+    pin1: embassy_rp::Peri<'static, PIN_1>,
+    pin2: embassy_rp::Peri<'static, PIN_2>,
+    pin3: embassy_rp::Peri<'static, PIN_3>,
+    pin4: embassy_rp::Peri<'static, PIN_4>,
+    pin5: embassy_rp::Peri<'static, PIN_5>,
+    pin6: embassy_rp::Peri<'static, PIN_6>,
+    pin7: embassy_rp::Peri<'static, PIN_7>,
+    pin8: embassy_rp::Peri<'static, PIN_8>,
+    pin9: embassy_rp::Peri<'static, PIN_9>,
+    pin10: embassy_rp::Peri<'static, PIN_10>,
+    pin11: embassy_rp::Peri<'static, PIN_11>,
+    pin12: embassy_rp::Peri<'static, PIN_12>,
+    pin13: embassy_rp::Peri<'static, PIN_13>,
+    pin14: embassy_rp::Peri<'static, PIN_14>,
+    pin15: embassy_rp::Peri<'static, PIN_15>,
+    pin16: embassy_rp::Peri<'static, PIN_16>,
+    pin17: embassy_rp::Peri<'static, PIN_17>,
+    pin18: embassy_rp::Peri<'static, PIN_18>,
+    pin19: embassy_rp::Peri<'static, PIN_19>,
+    pin20: embassy_rp::Peri<'static, PIN_20>,
+    pin21: embassy_rp::Peri<'static, PIN_21>,
+) -> embassy_rp::pio::StateMachine<'static, PIO0, 0> {
     let Pio {
         mut common,
         sm0: mut sm,
         ..
     } = Pio::new(pio, Irqs); //contains the pio peripheral
-
-    let i2c_config = embassy_rp::i2c::Config::default();
-    let mut i2c = embassy_rp::i2c::I2c::new_async(p.I2C1, p.PIN_23, p.PIN_22, Irqs, i2c_config);
-
-    let addr: u8 = 0x18;
-    // set ctrl register
-    i2c.write(addr, &[0x20, 0x53]).await;
-    i2c.write(addr, &[0x23, 0x20]).await;
-    
-
     let prg = pio_asm!(
         //this program  is for moving data from TX to RX
         "out pins, 32", //change the state of pins, 0 is off, 1 is on.
@@ -2060,31 +2099,30 @@ async fn main(_spawner: Spawner) {
         "out pindirs, 32",
         "out pindirs, 32",
     );
-
     let mut cfg = Config::default(); // how does this know it's a PIO config?
 
-    let p0 = common.make_pio_pin(p.PIN_0);
-    let p1 = common.make_pio_pin(p.PIN_1);
-    let p2 = common.make_pio_pin(p.PIN_2);
-    let p3 = common.make_pio_pin(p.PIN_3);
-    let p4 = common.make_pio_pin(p.PIN_4);
-    let p5 = common.make_pio_pin(p.PIN_5);
-    let p6 = common.make_pio_pin(p.PIN_6);
-    let p7 = common.make_pio_pin(p.PIN_7);
-    let p8 = common.make_pio_pin(p.PIN_8);
-    let p9 = common.make_pio_pin(p.PIN_9);
-    let p10 = common.make_pio_pin(p.PIN_10);
-    let p11 = common.make_pio_pin(p.PIN_11);
-    let p12 = common.make_pio_pin(p.PIN_12);
-    let p13 = common.make_pio_pin(p.PIN_13);
-    let p14 = common.make_pio_pin(p.PIN_14);
-    let p15 = common.make_pio_pin(p.PIN_15);
-    let p16 = common.make_pio_pin(p.PIN_16);
-    let p17 = common.make_pio_pin(p.PIN_17);
-    let p18 = common.make_pio_pin(p.PIN_18);
-    let p19 = common.make_pio_pin(p.PIN_19);
-    let p20 = common.make_pio_pin(p.PIN_20);
-    let p21 = common.make_pio_pin(p.PIN_21);
+    let p0 = common.make_pio_pin(pin0);
+    let p1 = common.make_pio_pin(pin1);
+    let p2 = common.make_pio_pin(pin2);
+    let p3 = common.make_pio_pin(pin3);
+    let p4 = common.make_pio_pin(pin4);
+    let p5 = common.make_pio_pin(pin5);
+    let p6 = common.make_pio_pin(pin6);
+    let p7 = common.make_pio_pin(pin7);
+    let p8 = common.make_pio_pin(pin8);
+    let p9 = common.make_pio_pin(pin9);
+    let p10 = common.make_pio_pin(pin10);
+    let p11 = common.make_pio_pin(pin11);
+    let p12 = common.make_pio_pin(pin12);
+    let p13 = common.make_pio_pin(pin13);
+    let p14 = common.make_pio_pin(pin14);
+    let p15 = common.make_pio_pin(pin15);
+    let p16 = common.make_pio_pin(pin16);
+    let p17 = common.make_pio_pin(pin17);
+    let p18 = common.make_pio_pin(pin18);
+    let p19 = common.make_pio_pin(pin19);
+    let p20 = common.make_pio_pin(pin20);
+    let p21 = common.make_pio_pin(pin21);
 
     cfg.set_out_pins(&[
         &p0, &p1, &p2, &p3, &p4, &p5, &p6, &p7, &p8, &p9, &p10, &p11, &p12, &p13, &p14, &p15, &p16,
@@ -2107,148 +2145,30 @@ async fn main(_spawner: Spawner) {
     sm.set_config(&cfg);
     sm.set_enable(true);
 
-    let mut dma_out_ref = p.DMA_CH0;
-
-    let mut screen = Screen {
-        yx_grid: [[false; 21]; 21],
-        index_grid: [false; 484],
-        out_array: [0; 484],
-    };
-    //screen.yx_grid[2][20] = false;
-    for y in 0..21 {
-        for x in 0..21 {
-            if QR_CODE[y][x] == 1 {
-                screen.yx_grid[y][x] = true;
-            } else {
-                screen.yx_grid[y][x] = false;
-            }
-        }
-    }
-
-    let tx = sm.tx(); // this is where the state machine interface is
-    let mut xh: [u8; 1] = [0];
-    let mut yh: [u8; 1] = [0];
-    let mut zh: [u8; 1] = [0];
-    let mut x_val: i8 = 0;
-    let mut y_val: i8 = 0;
-    let mut z_val: i8 = 0;
-    let mut x_negative: usize = 18;
-    let mut y_negative: usize = 18;
-    let mut z_negative: usize = 18;
-    let mut dot = Dot::new();
-    let mut y_counter: usize = 0;
-    watchdog.start(Duration::from_millis(500));
-    loop {
-        i2c.write_read(addr, &[0x29], &mut xh).await; // read accel data
-        i2c.write_read(addr, &[0x2B], &mut yh).await; // read accel data
-        // i2c.write_read(addr, &[0x2D], &mut zh).await; // read accel data
-
-        x_val = xh[0] as i8;
-        y_val = yh[0] as i8;
-        // z_val = zh[0] as i8;
-
-        // if x_val < 0 {
-        //     x_val = -x_val;
-        //     x_negative = 17;
-        // } else {
-        //     x_negative = 18;
-        // }
-        // if y_val < 0 {
-        //     y_val = -y_val;
-        //     y_negative = 17;
-        // } else {
-        //     y_negative = 18;
-        // }
-        // if z_val < 0 {
-        //     z_val = -z_val;
-        //     z_negative = 17;
-        // } else {
-        //     z_negative = 18;
-        // }
-        watchdog.feed();
-        if y_val > 5 {
-            y_counter += 1;
-            if y_counter > 100 {
-                embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
-                Timer::after_millis(3000);
-            }
-        }
-        else {
-                if y_counter > 0 {
-                y_counter -= 1;
-            }
-        }
-        dot.accelerate((y_val as f32) / 250.0, (x_val as f32) / 250.0);
-        screen.one_pixel(dot.grid_location);
-        // screen.fill_index();
-        // screen.disp_num(x_negative as usize, 0, 0);
-        // screen.disp_num((x_val / 100).unsigned_abs() as usize, 0, 4);
-        // screen.disp_num((x_val / 10 % 10).unsigned_abs() as usize, 0, 8);
-        // screen.disp_num((x_val % 10).unsigned_abs() as usize, 0, 12);
-        // screen.disp_num(y_negative as usize, 7, 0);
-        // screen.disp_num((y_val / 100).unsigned_abs() as usize, 7, 4);
-        // screen.disp_num((y_val / 10 % 10).unsigned_abs() as usize, 7, 8);
-        // screen.disp_num((y_val % 10).unsigned_abs() as usize, 7, 12);
-        // screen.disp_num(z_negative as usize, 14, 0);
-        // screen.disp_num((z_val / 100).unsigned_abs() as usize, 14, 4);
-        // screen.disp_num((z_val / 10 % 10).unsigned_abs() as usize, 14, 8);
-        // screen.disp_num((z_val % 10).unsigned_abs() as usize, 14, 12);
-
-        screen.make_output();
-        for _ in 0..3 {
-            tx.dma_push(dma_out_ref.reborrow(), &screen.out_array, false)
-                .await;
-        }
-    }
+    sm // this is where the state machine interface is
 }
 
-struct Dot {
-    x: f32,
-    y: f32,
-    x_velocity: f32,
-    y_velocity: f32,
-    grid_location: (usize, usize),
-}
-impl Dot {
-    fn new() -> Dot {
-        Dot {
-            x: 0.0,
-            y: 0.0,
-            y_velocity: 0.0,
-            x_velocity: 0.0,
-            grid_location: (0, 0),
-        }
+// function clamp(x, min, max) {
+fn clamp<T: PartialOrd>(x: T, min: T, max: T) -> T {
+    // if (x < min)
+    if x < min {
+        // return min;
+        min
     }
-    fn accelerate(&mut self, y_accel: f32, x_accel: f32) {
-        self.y_velocity -= y_accel;
-        self.x_velocity += x_accel;
-        self.x += self.x_velocity;
-        self.y += self.y_velocity;
-        self.y = clamp(self.y, 0.0, 20.0);
-        self.x = clamp(self.x, 0.0, 20.0);
-        self.grid_location = (floorf(self.y) as usize, floorf(self.x) as usize);
-        if self.x == 0.0 {
-            if self.x_velocity < 0.0 {
-                self.x_velocity = -self.x_velocity * 0.4;
-            }
-        };
-        if self.x == 20.0 {
-            if self.x_velocity > 0.0 {
-                self.x_velocity = -self.x_velocity * 0.4;
-            }
-        };
-        if  self.y == 20.0 {
-            if self.y_velocity > 0.0 {
-                self.y_velocity = -self.y_velocity
-            }
-        };
-        if self.y == 0.0 {
-            self.y_velocity = 0.0;
-        }
+    // else if (x > max)
+    else if x > max {
+        // return max;
+        max
+    }
+    // else
+    else {
+        // return x;
+        x
     }
 }
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
+    embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
     loop {}
 }
