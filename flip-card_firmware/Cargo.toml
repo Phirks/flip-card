@@ -1,0 +1,50 @@
+[package]
+name = "flip-card"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "6186d111a5c150946ee5b7e9e68d987a38c1a463", features = [
+    # "defmt",
+] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "6186d111a5c150946ee5b7e9e68d987a38c1a463", features = [
+    # "defmt",
+] }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "6186d111a5c150946ee5b7e9e68d987a38c1a463", features = [
+    "arch-cortex-m",
+    "executor-thread",
+    "executor-interrupt",
+    # "defmt",
+] }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "6186d111a5c150946ee5b7e9e68d987a38c1a463", features = [
+    # "defmt",
+    # "defmt-timestamp-uptime",
+] }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "6186d111a5c150946ee5b7e9e68d987a38c1a463", features = [
+    # "defmt",
+    "unstable-pac",
+    "time-driver",
+    "critical-section-impl",
+    "rp235xa",
+    "binary-info",
+] }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "6186d111a5c150946ee5b7e9e68d987a38c1a463" }
+
+heapless = "0.8"
+libc = { version = "0.2.172", default-features = false }
+fixed = "1.23.1"
+fixed-macro = "1.2"
+cortex-m = { version = "0.7.6", features = ["inline-asm"] }
+cortex-m-rt = "0.7.0"
+embedded-hal-async = "1.0"
+static_cell = "2.1.1"
+fluid_sim = { path = "../fluid_sim" }
+# defmt = "1.0.1"
+# defmt-rtt = "1.0.0"
+# panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

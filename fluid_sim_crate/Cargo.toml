@@ -1,0 +1,7 @@
+[package]
+name = "fluid_sim"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libm = "0.2.15"
