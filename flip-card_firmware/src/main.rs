@@ -594,11 +594,11 @@ async fn drive_screen(
         tx.dma_push(dma_out_ref.reborrow(), &screen.out_array, false)
             .await;
         frame_count += 1;
-        if frame_count >= 10_000 {
-            // flash.blocking_write(reset_count_location, &[10u8]);
-            embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
-            Timer::after_millis(3000).await;
-        }
+        // if frame_count >= 10_000 {
+        //     // flash.blocking_write(reset_count_location, &[10u8]);
+        //     embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
+        //     Timer::after_millis(3000).await;
+        // }
     }
 }
 
@@ -624,8 +624,8 @@ async fn monitor_accelerometer(mut i2c: I2c<'static, I2C1, i2c::Async>) {
         i2c.write_read_async(addr, [0x2B], &mut yh).await.unwrap(); // read accel data
         x_val = xh[0] as i8;
         y_val = yh[0] as i8;
-        normalized_x_accel = (0.35 * accel_scale_max * (x_val as f32) / 128.0) / dt;
-        normalized_y_accel = (0.35 * accel_scale_max * (y_val as f32) / 128.0) / dt;
+        normalized_x_accel = (0.15 * accel_scale_max * (x_val as f32) / 128.0) / dt;
+        normalized_y_accel = (0.15 * accel_scale_max * (y_val as f32) / 128.0) / dt;
         if y_val > 14 {
             y_counter += 1;
             if y_counter > 200 {
@@ -643,7 +643,7 @@ async fn monitor_accelerometer(mut i2c: I2c<'static, I2C1, i2c::Async>) {
 
 #[embassy_executor::task]
 async fn simulation_update() {
-    let mut scene = Scene::setupScene(200);
+    let mut scene = Scene::setupScene(300);
     loop {
         if let First(accel_measurment) =
             select(ACCEL_DATA_SIGNAL.wait(), Timer::after_millis(10)).await

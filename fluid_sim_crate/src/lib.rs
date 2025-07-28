@@ -346,9 +346,9 @@ pub mod FluidSimulation {
                     let y1 = (pyi + 1).min(self.pNumY - 1);
 
                     // for (var xi = x0; xi <= x1; xi++) {
-                    for xi in x0..x1 {
+                    for xi in x0..=x1 {
                         // for (var yi = y0; yi <= y1; yi++) {
-                        for yi in y0..y1 {
+                        for yi in y0..=y1 {
                             // var cellNr = xi * this.pNumY + yi;
                             let cellNr = xi * self.pNumY + yi;
                             // var first = this.firstCellParticle[cellNr];
@@ -364,8 +364,8 @@ pub mod FluidSimulation {
                                     continue;
                                     // continue;
                                 }
-                                if self.particlePos[(2 * id) as usize] == py
-                                    && self.particlePos[(2 * id + 1) as usize] == px
+                                if self.particlePos[(2 * id) as usize] == px
+                                    && self.particlePos[(2 * id + 1) as usize] == py
                                 {
                                     self.particlePos[2 * id as usize] += 0.001 * i as f32;
                                     self.particlePos[2 * id as usize + 1] += 0.001 * i as f32;
@@ -1056,12 +1056,9 @@ pub mod FluidSimulation {
                 // this.integrateParticles(sdt, gravity);
                 self.integrateParticles(sdt, yGravity, xGravity);
                 // if (separateParticles)
-                if separateParticles {
-                    // this.pushParticlesApart(numParticleIters);
-                    self.pushParticlesApart(numParticleIters);
-                }
-                // // this.handleParticleCollisions(obstacleX, abstacleY, obstacleRadius)
+                self.pushParticlesApart(numParticleIters);
                 self.handleParticleCollisions();
+                // // this.handleParticleCollisions(obstacleX, abstacleY, obstacleRadius)
                 // // this.transferVelocities(true);
                 self.transferVelocities(true, 1.9);
                 // // this.updateParticleDensity();
@@ -1122,9 +1119,9 @@ pub mod FluidSimulation {
             // scene.dt = 1.0 / 60.0;
             let dt = 1.0 / 60.0;
             // scene.numPressureIters = 50;
-            let numPressureIters = 50;
+            let numPressureIters = 5;
             // scene.numParticleIters = 2;
-            let numParticleIters = 2;
+            let numParticleIters = 3;
 
             // var res = 100;
             let res = 23.0;

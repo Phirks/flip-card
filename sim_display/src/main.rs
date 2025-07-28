@@ -61,7 +61,7 @@ impl App {
     }
 
     fn render_gl(gl: WebGlRenderingContext) {
-        let mut scene = Scene::setupScene(50);
+        let mut scene = Scene::setupScene(400);
         // This should log only once -- not once per frame
 
         let mut timestamp = 0.0;
@@ -126,7 +126,7 @@ impl App {
                     make_circle(
                         &mut vertices,
                         &mut count,
-                        0.04,
+                        0.04*0.6,
                         30,
                         scene.fluid.particlePos[2 * i as usize],
                         scene.fluid.particlePos[2 * i as usize + 1],

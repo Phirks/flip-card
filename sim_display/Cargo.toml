@@ -9,7 +9,7 @@ wasm-bindgen = "0.2"
 yew = { git = "https://github.com/yewstack/yew.git", rev = "f0b182d39179a5ad8e086a022ffcf25a09a615b6", features = [
     "csr",
 ] }
-fluid_sim = { path = "../fluid_sim" }
+fluid_sim = { path = "../fluid_sim_crate" }
 
 [dependencies.web-sys]
 version = "0.3"
