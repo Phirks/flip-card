@@ -1,4 +1,4 @@
-This repo contains all files related to the flip-card project, which is a business card that runs a fluid simulation.
+This repo contains all files related to the flip-card project, which is a business card that runs a fluid-implicit-particle(FLIP) simulation.
 
 ![alt text](media/1000003136.gif)
 
