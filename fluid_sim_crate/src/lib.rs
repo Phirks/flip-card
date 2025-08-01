@@ -7,7 +7,7 @@ pub mod FluidSimulation {
 
     use libm::{floorf, sqrtf};
 
-    static max_particles_setting: usize = 400;
+    static max_particles_setting: usize = 800;
     static number_of_vertical_cells_setting: usize = 23;
     static number_of_horizontal_cells_setting: usize = 23;
     static max_particles_x2_setting: usize = max_particles_setting * 2;
@@ -151,8 +151,8 @@ pub mod FluidSimulation {
             let mut count: usize = 0;
             for i in 1..21 {
                 for j in 1..21 {
-                    particlePos[count * 2] = j as f32;
-                    particlePos[count * 2 + 1] = i as f32;
+                    particlePos[count * 2] = (j as f32) / 2.0;
+                    particlePos[count * 2 + 1] = (i as f32) / 2.0;
                     count += 1;
                 }
             }
@@ -364,12 +364,12 @@ pub mod FluidSimulation {
                                     continue;
                                     // continue;
                                 }
-                                if self.particlePos[(2 * id) as usize] == px
-                                    && self.particlePos[(2 * id + 1) as usize] == py
-                                {
-                                    self.particlePos[2 * id as usize] += 0.001 * i as f32;
-                                    self.particlePos[2 * id as usize + 1] += 0.001 * i as f32;
-                                }
+                                // if self.particlePos[(2 * id) as usize] == px
+                                //     && self.particlePos[(2 * id + 1) as usize] == py
+                                // {
+                                //     self.particlePos[2 * id as usize] += 0.001 * i as f32;
+                                //     self.particlePos[2 * id as usize + 1] += 0.001 * i as f32;
+                                // }
                                 // var qx = this.particlePos[2 * id];
                                 let qx = self.particlePos[(2 * id) as usize];
                                 // var qy = this.particlePos[2 * id + 1];
@@ -1058,6 +1058,10 @@ pub mod FluidSimulation {
                 // if (separateParticles)
                 self.pushParticlesApart(numParticleIters);
                 self.handleParticleCollisions();
+                self.pushParticlesApart(numParticleIters);
+                self.handleParticleCollisions();
+                self.pushParticlesApart(numParticleIters);
+                self.handleParticleCollisions();
                 // // this.handleParticleCollisions(obstacleX, abstacleY, obstacleRadius)
                 // // this.transferVelocities(true);
                 self.transferVelocities(true, 1.9);
@@ -1085,7 +1089,7 @@ pub mod FluidSimulation {
         overRelaxation: f32,
         compensateDrift: bool,
         separateParticles: bool,
-        _paused: bool,
+        paused: bool,
         pub fluid: FlipFluid,
     }
 
@@ -1112,16 +1116,16 @@ pub mod FluidSimulation {
             // separateParticles : true,
             let separateParticles = true;
             // paused: true,
-            let _paused = false;
+            let paused = false;
 
             // scene.overRelaxation = 1.9;
             let overRelaxation = 1.9;
             // scene.dt = 1.0 / 60.0;
             let dt = 1.0 / 60.0;
             // scene.numPressureIters = 50;
-            let numPressureIters = 5;
+            let numPressureIters = 10;
             // scene.numParticleIters = 2;
-            let numParticleIters = 3;
+            let numParticleIters = 1;
 
             // var res = 100;
             let res = 23.0;
@@ -1176,7 +1180,7 @@ pub mod FluidSimulation {
                 overRelaxation,
                 compensateDrift,
                 separateParticles,
-                _paused,
+                paused,
                 fluid,
             }
             // // create particles
@@ -1204,6 +1208,15 @@ pub mod FluidSimulation {
             // }
 
             // setObstacle(3.0, 2.0, true);
+        }
+        pub fn pause(&mut self) {
+            self.paused = true;
+        }
+        pub fn unpause(&mut self) {
+            self.paused = false;
+        }
+        pub fn is_paused(&self) -> bool {
+            self.paused
         }
         pub fn simulate(&mut self) {
             self.fluid.cellType.fill(CellType::AIR_CELL);

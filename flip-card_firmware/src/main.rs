@@ -1,11 +1,18 @@
 #![no_std]
 #![no_main]
 
+use core::default;
+
 use embassy_executor::{Executor, Spawner};
 use embassy_futures::select::{Either::First, select};
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio;
+use embassy_rp::gpio::DormantWakeConfig;
+use embassy_rp::gpio::Input;
+use embassy_rp::gpio::Pull;
+use heapless::Vec;
 // use embassy_rp::gpio::{Input, Pull};
+use embassy_rp::clocks::{ClockConfig, CoreVoltage, clk_sys_freq, core_voltage};
 use embassy_rp::i2c;
 use embassy_rp::i2c::I2c;
 use embassy_rp::i2c::InterruptHandler as I2C_InterruptHandler;
@@ -153,8 +160,10 @@ static LOOKUP_TABLE: [[usize; 21]; 21] = [
 
 struct Screen {
     yx_grid: [[bool; 21]; 21],
+    yx_lock_grid: [[bool; 21]; 21],
     index_grid: [bool; 484],
-    out_array: [u32; 484],
+    out_array: [u32; 506],
+    out_array_2: Vec<u32, 1452>,
 }
 impl Screen {
     fn fill_index(&mut self) {
@@ -167,21 +176,81 @@ impl Screen {
             }
         }
     }
+    fn post_process(&mut self) {
+        let mut temp_yx_lock_grid = [[false; 21]; 21];
+        for i in 0..self.yx_grid.len() {
+            for j in 0..self.yx_grid[0].len() {
+                if self.yx_grid[i][j] {
+                    if i == 20 || self.yx_grid[i + 1][j] {
+                        if i == 0 || self.yx_grid[i - 1][j] {
+                            if j == 20 || self.yx_grid[i][j + 1] {
+                                if j == 0 || self.yx_grid[i][j - 1] {
+                                    temp_yx_lock_grid[i][j] = true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for i in 0..self.yx_grid.len() {
+            for j in 0..self.yx_grid[0].len() {
+                if self.yx_lock_grid[i][j] {
+                    if i == 20 || self.yx_grid[i + 1][j] {
+                        if i == 0 || self.yx_grid[i - 1][j] {
+                            if j == 20 || self.yx_grid[i][j + 1] {
+                                if j == 0 || self.yx_grid[i][j - 1] {
+                                    self.yx_grid[i][j] = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.yx_lock_grid = temp_yx_lock_grid;
+    }
     fn make_output(&mut self) {
-        self.out_array = [0; 484];
+        self.out_array = [0; 506];
         let mut index = 0;
+        let mut counter = 0;
 
         for i in 0..BITS.len() {
-            self.out_array[index] = BITS[i];
+            self.out_array[counter] = BITS[i];
+            index += 1;
+            counter += 1;
+            for j in 0..BITS.len() {
+                if i != j {
+                    if self.index_grid[index] {
+                        self.out_array[counter] = BITS[i] | BITS[j];
+                    }
+                    index += 1;
+                    counter += 1;
+                }
+            }
+            // counter += 1;
+        }
+    }
+    fn make_output_2(&mut self) {
+        self.out_array_2 = Vec::new();
+        let mut index = 0;
+        for i in 0..BITS.len() {
             index += 1;
             for j in 0..BITS.len() {
                 if i != j {
                     if self.index_grid[index] {
-                        self.out_array[index] = BITS[i] | BITS[j];
+                        self.out_array_2.push(BITS[i]).unwrap();
+                        self.out_array_2.push(BITS[i] | BITS[j]).unwrap();
+                        self.out_array_2.push(0).unwrap();
                     }
                     index += 1;
                 }
             }
+        }
+        if self.index_grid[461] {
+            self.out_array_2.push(BITS[21]).unwrap();
+            self.out_array_2.push(BITS[21] | BITS[20]).unwrap();
+            self.out_array_2.push(0).unwrap();
         }
     }
     fn _disp_num(&mut self, num: usize, yloc: usize, xloc: usize) {
@@ -529,19 +598,31 @@ bind_interrupts!(struct Irqs {  //sets up the IRQ for the PIO, probably to pull 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     // define all the peripherals and pins
-    let p = embassy_rp::init(Default::default());
-    let i2c: I2c<'static, I2C1, i2c::Async> =
+    let mut config =
+        embassy_rp::config::Config::new(ClockConfig::system_freq(200_000_000).unwrap());
+    config.clocks.core_voltage = CoreVoltage::V1_15;
+    let p = embassy_rp::init(config);
+    let mut i2c: I2c<'static, I2C1, i2c::Async> =
         embassy_rp::i2c::I2c::new_async(p.I2C1, p.PIN_23, p.PIN_22, Irqs, Default::default());
     let mut watchdog = Watchdog::new(p.WATCHDOG);
     let mut enable_accel = Output::new(p.PIN_29, Level::Low);
     let pio: embassy_rp::Peri<'static, PIO0> = p.PIO0; //this PIO object is one of the 4 PIO peripherals
     let dma_out_ref: embassy_rp::Peri<'static, DMA_CH0> = p.DMA_CH0;
-    // let accel_interrupt_1 = Input::new(p.PIN_24, Pull::Up);
-    // let accel_interrupt_2 = Input::new(p.PIN_25, Pull::Up);
+    let mut accel_interrupt_1 = Input::new(p.PIN_24, Pull::Up);
+    let mut accel_interrupt_2 = Input::new(p.PIN_25, Pull::Up);
     // Timer::after_millis(10).await;
+    // i2c.blocking_write(addr, &[0x20, 0x53]).unwrap();
+    // i2c.blocking_write(addr, &[0x22, 0x40]).unwrap();
+    // i2c.blocking_write(addr, &[0x23, 0x20]).unwrap();
+    // i2c.blocking_write(addr, &[0x25, 0x20]).unwrap();
+    // i2c.blocking_write(addr, &[0x30, 0x0F]).unwrap();
+    // i2c.blocking_write(addr, &[0x34, 0x0F]).unwrap();
+
+    // accel_interrupt_1.dormant_wake(dormant_config.clone());
+    // accel_interrupt_2.dormant_wake(dormant_config.clone());
 
     // start up the peripherals
-    let sm = setup_pio(
+    let sm = setup_pio_2(
         pio, p.PIN_0, p.PIN_1, p.PIN_2, p.PIN_3, p.PIN_4, p.PIN_5, p.PIN_6, p.PIN_7, p.PIN_8,
         p.PIN_9, p.PIN_10, p.PIN_11, p.PIN_12, p.PIN_13, p.PIN_14, p.PIN_15, p.PIN_16, p.PIN_17,
         p.PIN_18, p.PIN_19, p.PIN_20, p.PIN_21,
@@ -549,8 +630,10 @@ async fn main(_spawner: Spawner) {
     enable_accel.set_high();
     let screen = Screen {
         yx_grid: [[false; 21]; 21],
+        yx_lock_grid: [[false; 21]; 21],
         index_grid: [false; 484],
-        out_array: [0; 484],
+        out_array: [0; 506],
+        out_array_2: Vec::new(),
     };
 
     watchdog.start(Duration::from_millis(500));
@@ -567,7 +650,9 @@ async fn main(_spawner: Spawner) {
 
     let executor0 = EXECUTOR0.init(Executor::new());
     executor0.run(|spawner| {
-        spawner.spawn(monitor_accelerometer(i2c)).unwrap();
+        spawner
+            .spawn(monitor_accelerometer(i2c, accel_interrupt_1))
+            .unwrap();
         spawner
             .spawn(drive_screen(watchdog, screen, sm, dma_out_ref))
             .unwrap()
@@ -589,29 +674,49 @@ async fn drive_screen(
         if FRAME_DATA_SIGNAL.signaled() {
             screen.yx_grid = FRAME_DATA_SIGNAL.wait().await;
         }
+        screen.post_process();
         screen.fill_index();
-        screen.make_output();
-        tx.dma_push(dma_out_ref.reborrow(), &screen.out_array, false)
+        // screen.make_output();
+        screen.make_output_2();
+        tx.dma_push(dma_out_ref.reborrow(), &screen.out_array_2, false)
             .await;
         frame_count += 1;
-        // if frame_count >= 10_000 {
-        //     // flash.blocking_write(reset_count_location, &[10u8]);
-        //     embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
-        //     Timer::after_millis(3000).await;
-        // }
+        if frame_count >= 10_000 {
+            // flash.blocking_write(reset_count_location, &[10u8]);
+            embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
+            Timer::after_millis(3000).await;
+        }
     }
 }
 
 #[embassy_executor::task(pool_size = 1)]
-async fn monitor_accelerometer(mut i2c: I2c<'static, I2C1, i2c::Async>) {
+async fn monitor_accelerometer(mut i2c: I2c<'static, I2C1, i2c::Async>, mut int1: Input<'static>) {
     //setup accelerometer
     let addr: u8 = 0x18;
     let dt: f32 = 1.0 / 100.0; // 1/Hz,
     let accel_scale_max: f32 = 9.81 * 8.0; // m/s²
-    i2c.blocking_write(addr, &[0x20, 0x53]).unwrap();
-    i2c.blocking_write(addr, &[0x23, 0x20]).unwrap();
-    //read accelerometer
     let mut xh: [u8; 1] = [0];
+    i2c.write_read_async(addr, [0x31], &mut xh).await.unwrap(); // read accel data
+    i2c.blocking_write(addr, &[0x24, 0x80]).unwrap(); // CTRL_REG1, turn on, enable xyz
+    Timer::after_millis(100).await;
+    i2c.blocking_write(addr, &[0x20, 0x57]).unwrap(); // CTRL_REG1, turn on, enable xyz
+    i2c.blocking_write(addr, &[0x21, 0x00]).unwrap(); // CTRL_REG2, high pass filter off
+    i2c.blocking_write(addr, &[0x22, 0x40]).unwrap(); // CTRL_REG3, int activity to INT1 pin
+    i2c.blocking_write(addr, &[0x23, 0x20]).unwrap(); // CTRL_REG4, FS = 2G
+    // i2c.blocking_write(addr, &[0x24, 0x08]).unwrap(); // CTRL_REG5, latch INT pin 1
+    i2c.blocking_write(addr, &[0x32, 0x08]).unwrap(); // INT1_THS, Threshold = 250 mg
+    i2c.blocking_write(addr, &[0x33, 0x0F]).unwrap(); // INT1_DURATION, Duration = 0
+    i2c.blocking_write(addr, &[0x30, 0x02]).unwrap(); // INT1_CFG, enable xh and yh interrupts
+    int1.wait_for_high().await;
+    let dormant_config = DormantWakeConfig {
+        edge_high: false,
+        edge_low: false,
+        level_high: true,
+        level_low: false,
+    };
+    int1.dormant_wake(dormant_config.clone());
+    // embassy_rp::clocks::dormant_sleep();
+    //read accelerometer
     let mut yh: [u8; 1] = [0];
     let mut x_val: i8;
     let mut y_val: i8;
@@ -624,11 +729,11 @@ async fn monitor_accelerometer(mut i2c: I2c<'static, I2C1, i2c::Async>) {
         i2c.write_read_async(addr, [0x2B], &mut yh).await.unwrap(); // read accel data
         x_val = xh[0] as i8;
         y_val = yh[0] as i8;
-        normalized_x_accel = (0.15 * accel_scale_max * (x_val as f32) / 128.0) / dt;
-        normalized_y_accel = (0.15 * accel_scale_max * (y_val as f32) / 128.0) / dt;
-        if y_val > 14 {
+        normalized_x_accel = (0.7 * accel_scale_max * (x_val as f32) / 128.0) / dt;
+        normalized_y_accel = (0.7 * accel_scale_max * (y_val as f32) / 128.0) / dt;
+        if y_val > 10 {
             y_counter += 1;
-            if y_counter > 200 {
+            if y_counter > 100 {
                 embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
                 Timer::after_millis(3000).await;
             }
@@ -643,16 +748,29 @@ async fn monitor_accelerometer(mut i2c: I2c<'static, I2C1, i2c::Async>) {
 
 #[embassy_executor::task]
 async fn simulation_update() {
-    let mut scene = Scene::setupScene(300);
+    let mut scene = Scene::setupScene(500);
+    ACCEL_DATA_SIGNAL.wait();
+    // scene.pause();
+    let mut shake_count = 0;
     loop {
         if let First(accel_measurment) =
             select(ACCEL_DATA_SIGNAL.wait(), Timer::after_millis(10)).await
         {
             scene.set_gravity(accel_measurment);
+            // if accel_measurment[0] > 2500.0 || accel_measurment[0] < -2500.0 {
+            //     shake_count += 100;
+            //     if shake_count > 200 {
+            //         scene.unpause();
+            //     }
+            // } else if shake_count > 0 {
+            //     shake_count -= 1;
+            // }
         }
 
-        scene.simulate();
-        FRAME_DATA_SIGNAL.signal(scene.get_output());
+        if !scene.is_paused() {
+            scene.simulate();
+            FRAME_DATA_SIGNAL.signal(scene.get_output());
+        }
     }
 }
 
@@ -709,6 +827,93 @@ fn setup_pio(
         "out pindirs, 32",
         "out pindirs, 32",
         "out pindirs, 32",
+        "out pindirs, 32",
+        // "out pindirs, 32",
+    );
+    let mut cfg = Config::default(); // how does this know it's a PIO config?
+
+    let p0 = common.make_pio_pin(pin0);
+    let p1 = common.make_pio_pin(pin1);
+    let p2 = common.make_pio_pin(pin2);
+    let p3 = common.make_pio_pin(pin3);
+    let p4 = common.make_pio_pin(pin4);
+    let p5 = common.make_pio_pin(pin5);
+    let p6 = common.make_pio_pin(pin6);
+    let p7 = common.make_pio_pin(pin7);
+    let p8 = common.make_pio_pin(pin8);
+    let p9 = common.make_pio_pin(pin9);
+    let p10 = common.make_pio_pin(pin10);
+    let p11 = common.make_pio_pin(pin11);
+    let p12 = common.make_pio_pin(pin12);
+    let p13 = common.make_pio_pin(pin13);
+    let p14 = common.make_pio_pin(pin14);
+    let p15 = common.make_pio_pin(pin15);
+    let p16 = common.make_pio_pin(pin16);
+    let p17 = common.make_pio_pin(pin17);
+    let p18 = common.make_pio_pin(pin18);
+    let p19 = common.make_pio_pin(pin19);
+    let p20 = common.make_pio_pin(pin20);
+    let p21 = common.make_pio_pin(pin21);
+
+    cfg.set_out_pins(&[
+        &p0, &p1, &p2, &p3, &p4, &p5, &p6, &p7, &p8, &p9, &p10, &p11, &p12, &p13, &p14, &p15, &p16,
+        &p17, &p18, &p19, &p20, &p21,
+    ]);
+    cfg.use_program(&common.load_program(&prg.program), &[]); // load the program instructions
+    cfg.clock_divider = (U56F8!(125_000_000) / 200_000).to_fixed(); //set the speed, I thing its 12,500Hz
+    cfg.shift_in = ShiftConfig {
+        //config for shift in data from the left into the TX
+        auto_fill: true, //autofills the tx buffer when 32 bits shifted out
+        threshold: 32,
+        direction: ShiftDirection::Right,
+    };
+    cfg.shift_out = ShiftConfig {
+        //shift data out from the right into the RX
+        auto_fill: true,
+        threshold: 32,
+        direction: ShiftDirection::Left,
+    };
+    sm.set_config(&cfg);
+    sm.set_enable(true);
+
+    sm // this is where the state machine interface is
+}
+
+fn setup_pio_2(
+    pio: embassy_rp::Peri<'static, PIO0>,
+    pin0: embassy_rp::Peri<'static, PIN_0>,
+    pin1: embassy_rp::Peri<'static, PIN_1>,
+    pin2: embassy_rp::Peri<'static, PIN_2>,
+    pin3: embassy_rp::Peri<'static, PIN_3>,
+    pin4: embassy_rp::Peri<'static, PIN_4>,
+    pin5: embassy_rp::Peri<'static, PIN_5>,
+    pin6: embassy_rp::Peri<'static, PIN_6>,
+    pin7: embassy_rp::Peri<'static, PIN_7>,
+    pin8: embassy_rp::Peri<'static, PIN_8>,
+    pin9: embassy_rp::Peri<'static, PIN_9>,
+    pin10: embassy_rp::Peri<'static, PIN_10>,
+    pin11: embassy_rp::Peri<'static, PIN_11>,
+    pin12: embassy_rp::Peri<'static, PIN_12>,
+    pin13: embassy_rp::Peri<'static, PIN_13>,
+    pin14: embassy_rp::Peri<'static, PIN_14>,
+    pin15: embassy_rp::Peri<'static, PIN_15>,
+    pin16: embassy_rp::Peri<'static, PIN_16>,
+    pin17: embassy_rp::Peri<'static, PIN_17>,
+    pin18: embassy_rp::Peri<'static, PIN_18>,
+    pin19: embassy_rp::Peri<'static, PIN_19>,
+    pin20: embassy_rp::Peri<'static, PIN_20>,
+    pin21: embassy_rp::Peri<'static, PIN_21>,
+) -> embassy_rp::pio::StateMachine<'static, PIO0, 0> {
+    let Pio {
+        mut common,
+        sm0: mut sm,
+        ..
+    } = Pio::new(pio, Irqs); //contains the pio peripheral
+    let prg = pio_asm!(
+        //this program  is for moving data from TX to RX
+        "out pins, 32", //change the state of pins, 0 is off, 1 is on.
+        "out pindirs, 32",
+        "nop [4]",
         "out pindirs, 32",
     );
     let mut cfg = Config::default(); // how does this know it's a PIO config?
