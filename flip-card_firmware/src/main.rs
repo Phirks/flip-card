@@ -636,7 +636,6 @@ async fn main(_spawner: Spawner) {
         out_array_2: Vec::new(),
     };
 
-    watchdog.start(Duration::from_millis(500));
     // spawn background tasks
 
     spawn_core1(
@@ -668,22 +667,24 @@ async fn drive_screen(
 ) {
     let tx = sm.tx();
     let mut frame_count: u128 = 0;
+    FRAME_DATA_SIGNAL.wait().await;
+    watchdog.start(Duration::from_millis(50));
     loop {
         Timer::after_millis(1).await;
         watchdog.feed();
         if FRAME_DATA_SIGNAL.signaled() {
             screen.yx_grid = FRAME_DATA_SIGNAL.wait().await;
-        }
+            frame_count = 0;
+        } else {frame_count +=1;}
         screen.post_process();
         screen.fill_index();
         // screen.make_output();
         screen.make_output_2();
         tx.dma_push(dma_out_ref.reborrow(), &screen.out_array_2, false)
             .await;
-        frame_count += 1;
-        if frame_count >= 10_000 {
+        if frame_count >= 1_000 {
             // flash.blocking_write(reset_count_location, &[10u8]);
-            embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
+            // embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
             Timer::after_millis(3000).await;
         }
     }
@@ -704,17 +705,17 @@ async fn monitor_accelerometer(mut i2c: I2c<'static, I2C1, i2c::Async>, mut int1
     i2c.blocking_write(addr, &[0x22, 0x40]).unwrap(); // CTRL_REG3, int activity to INT1 pin
     i2c.blocking_write(addr, &[0x23, 0x20]).unwrap(); // CTRL_REG4, FS = 2G
     // i2c.blocking_write(addr, &[0x24, 0x08]).unwrap(); // CTRL_REG5, latch INT pin 1
-    i2c.blocking_write(addr, &[0x32, 0x08]).unwrap(); // INT1_THS, Threshold = 250 mg
-    i2c.blocking_write(addr, &[0x33, 0x0F]).unwrap(); // INT1_DURATION, Duration = 0
+    i2c.blocking_write(addr, &[0x32, 0x0A]).unwrap(); // INT1_THS, Threshold = 250 mg
+    i2c.blocking_write(addr, &[0x33, 0x01]).unwrap(); // INT1_DURATION, Duration = 0
     i2c.blocking_write(addr, &[0x30, 0x02]).unwrap(); // INT1_CFG, enable xh and yh interrupts
     int1.wait_for_high().await;
-    let dormant_config = DormantWakeConfig {
-        edge_high: false,
-        edge_low: false,
-        level_high: true,
-        level_low: false,
-    };
-    int1.dormant_wake(dormant_config.clone());
+    // let dormant_config = DormantWakeConfig {
+    //     edge_high: false,
+    //     edge_low: false,
+    //     level_high: true,
+    //     level_low: false,
+    // };
+    // int1.dormant_wake(dormant_config.clone());
     // embassy_rp::clocks::dormant_sleep();
     //read accelerometer
     let mut yh: [u8; 1] = [0];
@@ -734,8 +735,9 @@ async fn monitor_accelerometer(mut i2c: I2c<'static, I2C1, i2c::Async>, mut int1
         if y_val > 10 {
             y_counter += 1;
             if y_counter > 100 {
-                embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
-                Timer::after_millis(3000).await;
+                loop{}
+                // embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
+                // Timer::after_millis(3000).await;
             }
         } else {
             if y_counter > 0 {
@@ -749,27 +751,32 @@ async fn monitor_accelerometer(mut i2c: I2c<'static, I2C1, i2c::Async>, mut int1
 #[embassy_executor::task]
 async fn simulation_update() {
     let mut scene = Scene::setupScene(500);
-    ACCEL_DATA_SIGNAL.wait();
-    // scene.pause();
+    ACCEL_DATA_SIGNAL.wait().await;
+    FRAME_DATA_SIGNAL.signal([[false; 21]; 21]);
+    let mut frame_count =0;
+    scene.pause();
     let mut shake_count = 0;
     loop {
         if let First(accel_measurment) =
             select(ACCEL_DATA_SIGNAL.wait(), Timer::after_millis(10)).await
         {
             scene.set_gravity(accel_measurment);
-            // if accel_measurment[0] > 2500.0 || accel_measurment[0] < -2500.0 {
-            //     shake_count += 100;
-            //     if shake_count > 200 {
-            //         scene.unpause();
-            //     }
-            // } else if shake_count > 0 {
-            //     shake_count -= 1;
-            // }
+            if scene.is_paused() && (accel_measurment[1] > 1000.0 || accel_measurment[1] < -1000.0) {
+                shake_count += 100;
+                if shake_count > 400 {
+                    scene.unpause();
+                }
+            } else if shake_count >0 {
+                shake_count -= 1;
+            }
         }
 
-        if !scene.is_paused() {
+        if !scene.is_paused() && frame_count < 1000{
+            frame_count += 1;
             scene.simulate();
             FRAME_DATA_SIGNAL.signal(scene.get_output());
+        } else {
+            // ACCEL_DATA_SIGNAL.wait().await;
         }
     }
 }
@@ -967,6 +974,6 @@ fn setup_pio_2(
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
+    // embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
     loop {}
 }
