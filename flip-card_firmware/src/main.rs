@@ -675,7 +675,9 @@ async fn drive_screen(
         if FRAME_DATA_SIGNAL.signaled() {
             screen.yx_grid = FRAME_DATA_SIGNAL.wait().await;
             frame_count = 0;
-        } else {frame_count +=1;}
+        } else {
+            frame_count += 1;
+        }
         screen.post_process();
         screen.fill_index();
         // screen.make_output();
@@ -708,15 +710,16 @@ async fn monitor_accelerometer(mut i2c: I2c<'static, I2C1, i2c::Async>, mut int1
     i2c.blocking_write(addr, &[0x32, 0x0A]).unwrap(); // INT1_THS, Threshold = 250 mg
     i2c.blocking_write(addr, &[0x33, 0x01]).unwrap(); // INT1_DURATION, Duration = 0
     i2c.blocking_write(addr, &[0x30, 0x02]).unwrap(); // INT1_CFG, enable xh and yh interrupts
-    int1.wait_for_high().await;
-    // let dormant_config = DormantWakeConfig {
-    //     edge_high: false,
-    //     edge_low: false,
-    //     level_high: true,
-    //     level_low: false,
-    // };
-    // int1.dormant_wake(dormant_config.clone());
-    // embassy_rp::clocks::dormant_sleep();
+    // int1.wait_for_high().await;
+    let dormant_config = DormantWakeConfig {
+        edge_high: false,
+        edge_low: false,
+        level_high: true,
+        level_low: false,
+    };
+    let wake = int1.dormant_wake(dormant_config.clone());
+    embassy_rp::clocks::dormant_sleep();
+    drop(wake);
     //read accelerometer
     let mut yh: [u8; 1] = [0];
     let mut x_val: i8;
@@ -735,9 +738,9 @@ async fn monitor_accelerometer(mut i2c: I2c<'static, I2C1, i2c::Async>, mut int1
         if y_val > 10 {
             y_counter += 1;
             if y_counter > 100 {
-                loop{}
-                // embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
-                // Timer::after_millis(3000).await;
+                loop {}
+                embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
+                Timer::after_millis(3000).await;
             }
         } else {
             if y_counter > 0 {
@@ -753,7 +756,7 @@ async fn simulation_update() {
     let mut scene = Scene::setupScene(500);
     ACCEL_DATA_SIGNAL.wait().await;
     FRAME_DATA_SIGNAL.signal([[false; 21]; 21]);
-    let mut frame_count =0;
+    let mut frame_count = 0;
     scene.pause();
     let mut shake_count = 0;
     loop {
@@ -761,17 +764,18 @@ async fn simulation_update() {
             select(ACCEL_DATA_SIGNAL.wait(), Timer::after_millis(10)).await
         {
             scene.set_gravity(accel_measurment);
-            if scene.is_paused() && (accel_measurment[1] > 1000.0 || accel_measurment[1] < -1000.0) {
+            if scene.is_paused() && (accel_measurment[1] > 1000.0 || accel_measurment[1] < -1000.0)
+            {
                 shake_count += 100;
                 if shake_count > 400 {
                     scene.unpause();
                 }
-            } else if shake_count >0 {
+            } else if shake_count > 0 {
                 shake_count -= 1;
             }
         }
 
-        if !scene.is_paused() && frame_count < 1000{
+        if !scene.is_paused() && frame_count < 1000 {
             frame_count += 1;
             scene.simulate();
             FRAME_DATA_SIGNAL.signal(scene.get_output());
