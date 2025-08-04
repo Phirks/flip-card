@@ -1,0 +1,5 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "RP2350_60QFN_minimal")(type "KiCad")(uri "${KIPRJMOD}/RP2350_60QFN_minimal.pretty")(options "")(descr ""))
+  (lib (name "user_footprints")(type "KiCad")(uri "${KIPRJMOD}/user_footprints.pretty")(options "")(descr ""))
+)

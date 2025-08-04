@@ -1,0 +1,179 @@
+(footprint "BatteryHolder_Custom"
+	(version 20240108)
+	(generator "pcbnew")
+	(generator_version "8.0")
+	(layer "F.Cu")
+	(descr "https://www.renata.com/fr/downloads/?product=smtu2032-lf&fileid=6a9833a4d49dfb7b550194fe0f")
+	(tags "Renata SMT battery holder coin cell 2032")
+	(property "Reference" "REF**"
+		(at -2.159 -13.716 0)
+		(layer "F.SilkS")
+		(uuid "0ebfb84d-6a27-4a79-a29f-5b00dfc75b2b")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "BatteryHolder_Custom"
+		(at 0 11 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(uuid "6f2ae1b9-89ba-44cf-86df-0402f56d85bf")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "51b05487-acaf-4277-b9e3-35e1bab94922")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "8f046013-921b-4e0d-aeae-a388aefaea5e")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "3c4acdb2-734b-4fc0-8087-ebc304d8131b")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_line
+		(start 12.259299 1)
+		(end 13.4 1)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "68d95272-7795-4fd4-b4b5-b78546fba111")
+	)
+	(fp_line
+		(start 13.4 1)
+		(end 13.4 5)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "9e52e4b8-7e58-4780-a88f-b079b7381935")
+	)
+	(fp_line
+		(start 13.4 5)
+		(end 11.237901 5)
+		(stroke
+			(width 0.001)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "0e1466f4-78e6-4cf2-b141-e2f425d4a8d5")
+	)
+	(fp_arc
+		(start 11.237901 5)
+		(mid -11.917617 -3.043159)
+		(end 12.259299 1)
+		(stroke
+			(width 0.05)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "cfec858a-4148-482e-a6de-b8ba717b6819")
+	)
+	(fp_line
+		(start -7 0)
+		(end -5 0)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "df32840e-2912-4088-b54c-9a85f64c0265")
+	)
+	(fp_line
+		(start -6 -1)
+		(end -6 1)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "639c0e59-e95c-4114-bccd-2e7277505454")
+	)
+	(fp_text user "${REFERENCE}"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(uuid "14bfcd91-83fd-4f2a-a8ff-c6ab2c68ffd6")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(pad "1" smd roundrect
+		(at 15.225 -3 90)
+		(size 4 3.65)
+		(layers "B.Cu" "B.Paste" "B.Mask")
+		(roundrect_rratio 0.08)
+		(uuid "2d67a417-188f-4014-9282-000265d80009")
+	)
+	(pad "2" smd roundrect
+		(at 15.225 3 90)
+		(size 4 3.65)
+		(layers "B.Cu" "B.Paste" "B.Mask")
+		(roundrect_rratio 0.08)
+		(uuid "3bde622d-889f-4f0a-a1e1-852e0564cbc0")
+	)
+	(model "${KIPRJMOD}/Battery_Top.STEP"
+		(offset
+			(xyz 32.17 70.7 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 -90)
+		)
+	)
+	(model "${KIPRJMOD}/Battery_Bottom.STEP"
+		(offset
+			(xyz 32.17 70.7 -0.6)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 180 -90)
+		)
+	)
+)

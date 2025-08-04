@@ -1,0 +1,279 @@
+(footprint "BatteryHolder_Renata_SMTU2032-LF_1x2032"
+	(version 20240108)
+	(generator "pcbnew")
+	(generator_version "8.0")
+	(layer "F.Cu")
+	(descr "https://www.renata.com/fr/downloads/?product=smtu2032-lf&fileid=6a9833a4d49dfb7b550194fe0f")
+	(tags "Renata SMT battery holder coin cell 2032")
+	(property "Reference" "REF**"
+		(at -2.159 -13.716 0)
+		(layer "F.SilkS")
+		(uuid "0ebfb84d-6a27-4a79-a29f-5b00dfc75b2b")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "BatteryHolder_Renata_SMTU2032-LF_1x2032"
+		(at 0 11 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(uuid "6f2ae1b9-89ba-44cf-86df-0402f56d85bf")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "51b05487-acaf-4277-b9e3-35e1bab94922")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "8f046013-921b-4e0d-aeae-a388aefaea5e")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "3c4acdb2-734b-4fc0-8087-ebc304d8131b")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_circle
+		(center 0 0)
+		(end 10 0)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill none)
+		(layer "Edge.Cuts")
+		(uuid "7e990450-5295-40d6-9f1c-fd55e61943c2")
+	)
+	(fp_line
+		(start 10.16 -1.143)
+		(end 17.145 -1.143)
+		(stroke
+			(width 0.05)
+			(type default)
+		)
+		(layer "B.CrtYd")
+		(uuid "f99f7646-89f0-4f16-8a69-0b3bbb0643e3")
+	)
+	(fp_line
+		(start 17.145 -1.143)
+		(end 17.145 1.143)
+		(stroke
+			(width 0.05)
+			(type default)
+		)
+		(layer "B.CrtYd")
+		(uuid "fb2e05b1-2540-4f51-9b9e-4e7b3c59eeb8")
+	)
+	(fp_line
+		(start 17.145 1.143)
+		(end 10.16 1.143)
+		(stroke
+			(width 0.05)
+			(type default)
+		)
+		(layer "B.CrtYd")
+		(uuid "a9491ffd-5f4e-4f86-bab5-942928ff29e8")
+	)
+	(fp_arc
+		(start 10.159999 1.143)
+		(mid -10.224091 0)
+		(end 10.159999 -1.143)
+		(stroke
+			(width 0.05)
+			(type default)
+		)
+		(layer "B.CrtYd")
+		(uuid "13c86acb-969e-4c3c-8e14-c5987909d5dc")
+	)
+	(fp_line
+		(start 8.509 -5.588)
+		(end 17.145 -5.588)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "83a363ef-2850-4113-853b-2966af02d72d")
+	)
+	(fp_line
+		(start 8.509 5.588)
+		(end 17.145 5.588)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "5337289f-a98f-4cd4-9c1e-372e83ac0a67")
+	)
+	(fp_line
+		(start 9.525 -3.429)
+		(end 17.145 -3.429)
+		(stroke
+			(width 0.05)
+			(type default)
+		)
+		(layer "F.CrtYd")
+		(uuid "bec1b194-e17d-4115-ae5d-46606c446057")
+	)
+	(fp_line
+		(start 9.525 3.429)
+		(end 17.145 3.429)
+		(stroke
+			(width 0.05)
+			(type default)
+		)
+		(layer "F.CrtYd")
+		(uuid "bc3e98a8-0fff-428c-8747-4438cb8abc46")
+	)
+	(fp_line
+		(start 17.145 -5.588)
+		(end 17.145 -3.429)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "ec2e3d8a-128c-4be8-b432-9738bca934ae")
+	)
+	(fp_line
+		(start 17.145 3.429)
+		(end 17.145 5.588)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "4702f6f4-386c-453c-90c7-6f56cd6824c5")
+	)
+	(fp_arc
+		(start 8.509 5.588)
+		(mid -10.179824 0)
+		(end 8.509 -5.588)
+		(stroke
+			(width 0.05)
+			(type default)
+		)
+		(layer "F.CrtYd")
+		(uuid "debacb77-5133-4532-bbfa-f86a221fdec1")
+	)
+	(fp_arc
+		(start 9.524999 -3.429)
+		(mid 10.123421 0)
+		(end 9.524999 3.429)
+		(stroke
+			(width 0.05)
+			(type default)
+		)
+		(layer "F.CrtYd")
+		(uuid "821948be-1fe3-41f6-afb2-e34d45f8960c")
+	)
+	(fp_line
+		(start -7 0)
+		(end -5 0)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "df32840e-2912-4088-b54c-9a85f64c0265")
+	)
+	(fp_line
+		(start -6 -1)
+		(end -6 1)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "639c0e59-e95c-4114-bccd-2e7277505454")
+	)
+	(fp_text user "+"
+		(at 10.922 -5.969 0)
+		(layer "F.SilkS")
+		(uuid "f0fade92-f79a-404c-90db-4c4829aa0993")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(fp_text user "${REFERENCE}"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(uuid "14bfcd91-83fd-4f2a-a8ff-c6ab2c68ffd6")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(pad "1" smd roundrect
+		(at 13.75 -5)
+		(size 4.5 2)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(roundrect_rratio 0.07692307692)
+		(uuid "ab27de48-2906-4c17-9da9-15a1ebe8aee9")
+	)
+	(pad "1" smd roundrect
+		(at 13.75 5)
+		(size 4.5 2)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(roundrect_rratio 0.07692307692)
+		(uuid "84e5506c-143e-495f-9aa4-d3a71622f213")
+	)
+	(pad "2" smd roundrect
+		(at 13.75 0)
+		(size 4.5 2)
+		(layers "B.Cu" "B.Paste" "B.Mask")
+		(roundrect_rratio 0.08)
+		(uuid "2d67a417-188f-4014-9282-000265d80009")
+	)
+	(model "${KIPRJMOD}/ML2020_G1A.STEP"
+		(offset
+			(xyz 0 0 1.35)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 90 0 90)
+		)
+	)
+)

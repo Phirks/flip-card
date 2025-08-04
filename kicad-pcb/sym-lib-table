@@ -1,0 +1,8 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "MCU_RaspberryPi_RP2350")(type "KiCad")(uri "${KIPRJMOD}/MCU_RaspberryPi_RP2350.kicad_sym")(options "")(descr ""))
+  (lib (name "cnhardware")(type "KiCad")(uri "${KIPRJMOD}/cnhardware.kicad_sym")(options "")(descr ""))
+  (lib (name "LIS2DH12TR")(type "KiCad")(uri "${KIPRJMOD}/LIS2DH12TR.kicad_sym")(options "")(descr ""))
+  (lib (name "user_symbols")(type "KiCad")(uri "${KIPRJMOD}/user_symbols.kicad_sym")(options "")(descr ""))
+  (lib (name "User_Symbols")(type "KiCad")(uri "C:/Scoreboard/scoreboard_circuit/User_Symbols.kicad_sym")(options "")(descr ""))
+)

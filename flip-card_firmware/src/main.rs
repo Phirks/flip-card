@@ -604,22 +604,13 @@ async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(config);
     let mut i2c: I2c<'static, I2C1, i2c::Async> =
         embassy_rp::i2c::I2c::new_async(p.I2C1, p.PIN_23, p.PIN_22, Irqs, Default::default());
-    let mut watchdog = Watchdog::new(p.WATCHDOG);
+    let watchdog = Watchdog::new(p.WATCHDOG);
     let mut enable_accel = Output::new(p.PIN_29, Level::Low);
     let pio: embassy_rp::Peri<'static, PIO0> = p.PIO0; //this PIO object is one of the 4 PIO peripherals
     let dma_out_ref: embassy_rp::Peri<'static, DMA_CH0> = p.DMA_CH0;
     let mut accel_interrupt_1 = Input::new(p.PIN_24, Pull::Up);
     let mut accel_interrupt_2 = Input::new(p.PIN_25, Pull::Up);
     // Timer::after_millis(10).await;
-    // i2c.blocking_write(addr, &[0x20, 0x53]).unwrap();
-    // i2c.blocking_write(addr, &[0x22, 0x40]).unwrap();
-    // i2c.blocking_write(addr, &[0x23, 0x20]).unwrap();
-    // i2c.blocking_write(addr, &[0x25, 0x20]).unwrap();
-    // i2c.blocking_write(addr, &[0x30, 0x0F]).unwrap();
-    // i2c.blocking_write(addr, &[0x34, 0x0F]).unwrap();
-
-    // accel_interrupt_1.dormant_wake(dormant_config.clone());
-    // accel_interrupt_2.dormant_wake(dormant_config.clone());
 
     // start up the peripherals
     let sm = setup_pio_2(
@@ -650,7 +641,11 @@ async fn main(_spawner: Spawner) {
     let executor0 = EXECUTOR0.init(Executor::new());
     executor0.run(|spawner| {
         spawner
-            .spawn(monitor_accelerometer(i2c, accel_interrupt_1))
+            .spawn(monitor_accelerometer(
+                i2c,
+                accel_interrupt_1,
+                accel_interrupt_2,
+            ))
             .unwrap();
         spawner
             .spawn(drive_screen(watchdog, screen, sm, dma_out_ref))
@@ -693,7 +688,11 @@ async fn drive_screen(
 }
 
 #[embassy_executor::task(pool_size = 1)]
-async fn monitor_accelerometer(mut i2c: I2c<'static, I2C1, i2c::Async>, mut int1: Input<'static>) {
+async fn monitor_accelerometer(
+    mut i2c: I2c<'static, I2C1, i2c::Async>,
+    mut int1: Input<'static>,
+    mut int2: Input<'static>,
+) {
     //setup accelerometer
     let addr: u8 = 0x18;
     let dt: f32 = 1.0 / 100.0; // 1/Hz,
@@ -718,8 +717,10 @@ async fn monitor_accelerometer(mut i2c: I2c<'static, I2C1, i2c::Async>, mut int1
         level_low: false,
     };
     let wake = int1.dormant_wake(dormant_config.clone());
+    let wake2 = int2.dormant_wake(dormant_config.clone());
     embassy_rp::clocks::dormant_sleep();
     drop(wake);
+    drop(wake2);
     //read accelerometer
     let mut yh: [u8; 1] = [0];
     let mut x_val: i8;
@@ -738,7 +739,6 @@ async fn monitor_accelerometer(mut i2c: I2c<'static, I2C1, i2c::Async>, mut int1
         if y_val > 10 {
             y_counter += 1;
             if y_counter > 100 {
-                loop {}
                 embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
                 Timer::after_millis(3000).await;
             }
@@ -783,111 +783,6 @@ async fn simulation_update() {
             // ACCEL_DATA_SIGNAL.wait().await;
         }
     }
-}
-
-fn setup_pio(
-    pio: embassy_rp::Peri<'static, PIO0>,
-    pin0: embassy_rp::Peri<'static, PIN_0>,
-    pin1: embassy_rp::Peri<'static, PIN_1>,
-    pin2: embassy_rp::Peri<'static, PIN_2>,
-    pin3: embassy_rp::Peri<'static, PIN_3>,
-    pin4: embassy_rp::Peri<'static, PIN_4>,
-    pin5: embassy_rp::Peri<'static, PIN_5>,
-    pin6: embassy_rp::Peri<'static, PIN_6>,
-    pin7: embassy_rp::Peri<'static, PIN_7>,
-    pin8: embassy_rp::Peri<'static, PIN_8>,
-    pin9: embassy_rp::Peri<'static, PIN_9>,
-    pin10: embassy_rp::Peri<'static, PIN_10>,
-    pin11: embassy_rp::Peri<'static, PIN_11>,
-    pin12: embassy_rp::Peri<'static, PIN_12>,
-    pin13: embassy_rp::Peri<'static, PIN_13>,
-    pin14: embassy_rp::Peri<'static, PIN_14>,
-    pin15: embassy_rp::Peri<'static, PIN_15>,
-    pin16: embassy_rp::Peri<'static, PIN_16>,
-    pin17: embassy_rp::Peri<'static, PIN_17>,
-    pin18: embassy_rp::Peri<'static, PIN_18>,
-    pin19: embassy_rp::Peri<'static, PIN_19>,
-    pin20: embassy_rp::Peri<'static, PIN_20>,
-    pin21: embassy_rp::Peri<'static, PIN_21>,
-) -> embassy_rp::pio::StateMachine<'static, PIO0, 0> {
-    let Pio {
-        mut common,
-        sm0: mut sm,
-        ..
-    } = Pio::new(pio, Irqs); //contains the pio peripheral
-    let prg = pio_asm!(
-        //this program  is for moving data from TX to RX
-        "out pins, 32", //change the state of pins, 0 is off, 1 is on.
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        "out pindirs, 32",
-        // "out pindirs, 32",
-    );
-    let mut cfg = Config::default(); // how does this know it's a PIO config?
-
-    let p0 = common.make_pio_pin(pin0);
-    let p1 = common.make_pio_pin(pin1);
-    let p2 = common.make_pio_pin(pin2);
-    let p3 = common.make_pio_pin(pin3);
-    let p4 = common.make_pio_pin(pin4);
-    let p5 = common.make_pio_pin(pin5);
-    let p6 = common.make_pio_pin(pin6);
-    let p7 = common.make_pio_pin(pin7);
-    let p8 = common.make_pio_pin(pin8);
-    let p9 = common.make_pio_pin(pin9);
-    let p10 = common.make_pio_pin(pin10);
-    let p11 = common.make_pio_pin(pin11);
-    let p12 = common.make_pio_pin(pin12);
-    let p13 = common.make_pio_pin(pin13);
-    let p14 = common.make_pio_pin(pin14);
-    let p15 = common.make_pio_pin(pin15);
-    let p16 = common.make_pio_pin(pin16);
-    let p17 = common.make_pio_pin(pin17);
-    let p18 = common.make_pio_pin(pin18);
-    let p19 = common.make_pio_pin(pin19);
-    let p20 = common.make_pio_pin(pin20);
-    let p21 = common.make_pio_pin(pin21);
-
-    cfg.set_out_pins(&[
-        &p0, &p1, &p2, &p3, &p4, &p5, &p6, &p7, &p8, &p9, &p10, &p11, &p12, &p13, &p14, &p15, &p16,
-        &p17, &p18, &p19, &p20, &p21,
-    ]);
-    cfg.use_program(&common.load_program(&prg.program), &[]); // load the program instructions
-    cfg.clock_divider = (U56F8!(125_000_000) / 200_000).to_fixed(); //set the speed, I thing its 12,500Hz
-    cfg.shift_in = ShiftConfig {
-        //config for shift in data from the left into the TX
-        auto_fill: true, //autofills the tx buffer when 32 bits shifted out
-        threshold: 32,
-        direction: ShiftDirection::Right,
-    };
-    cfg.shift_out = ShiftConfig {
-        //shift data out from the right into the RX
-        auto_fill: true,
-        threshold: 32,
-        direction: ShiftDirection::Left,
-    };
-    sm.set_config(&cfg);
-    sm.set_enable(true);
-
-    sm // this is where the state machine interface is
 }
 
 fn setup_pio_2(
