@@ -2,9 +2,9 @@ This repo contains all files related to the flip-card project, which is a busine
 
 ![alt text](media/1000003136.gif)
 
-The fluid simulation logic is contained in a standalone crate, which is in the "fluid_sim_crate" folder
+The PCB design files are in the "kicad-pcb" folder. The flip-card project is inspired by mitxela's fluid simulation pendant project https://mitxela.com/projects/fluid-pendant
 
-The PCB design files are in the "kicad-pcb" folder
+The fluid simulation logic is contained in a standalone crate, which is in the "fluid_sim_crate" folder. This is based off the work by Matthias Müller (https://github.com/matthias-research) and his excelent demonstrations on his youtube channel "Ten Minute Physics"
 
 a WASM simulator is also provided in the "sim_display" folder, which is what I use to debug issues in the simulation.
 
