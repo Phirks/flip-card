@@ -1102,7 +1102,7 @@ pub mod FluidSimulation {
             // // dt : 1.0 / 120.0,
             // let dt = 1.0 / 120.0;
             // flipRatio : 0.9,
-            let flipRatio = 0.9;
+            let flipRatio = 0.85;
             // // numPressureIters : 100,
             // let numPressureIters = 100;
             // // numParticleIters : 2,
@@ -1110,7 +1110,7 @@ pub mod FluidSimulation {
             // frameNr : 0,
             let frameNr = 0;
             // overRelaxation : 1.9,
-            let _overRelaxation = 1.9;
+            let _overRelaxation = 0.5;
             // compensateDrift : true,
             let compensateDrift = true;
             // separateParticles : true,
@@ -1119,7 +1119,7 @@ pub mod FluidSimulation {
             let paused = false;
 
             // scene.overRelaxation = 1.9;
-            let overRelaxation = 1.9;
+            let overRelaxation = 0.5;
             // scene.dt = 1.0 / 60.0;
             let dt = 1.0 / 60.0;
             // scene.numPressureIters = 50;
@@ -1218,6 +1218,19 @@ pub mod FluidSimulation {
         pub fn is_paused(&self) -> bool {
             self.paused
         }
+        pub fn get_num_particles(&self) -> i32 {
+            self.fluid.numParticles
+        }
+        pub fn particle_add(&mut self, add: i32, max: i32) {
+            let current = self.fluid.numParticles;
+            if current + add < 0 {
+                self.fluid.numParticles = 0;
+            } else if current + add > max {
+                self.fluid.numParticles = max;
+            } else {
+                self.fluid.numParticles = current + add;
+            }
+        }
         pub fn simulate(&mut self) {
             self.fluid.cellType.fill(CellType::AIR_CELL);
             self.fluid.simulate(
@@ -1232,6 +1245,9 @@ pub mod FluidSimulation {
                 self.separateParticles,
             );
             self.frameNr += 1;
+        }
+        pub fn set_num_particles(&mut self, num_particles: i32) {
+            self.fluid.numParticles = num_particles;
         }
         pub fn set_gravity(&mut self, accel_measurment: [f32; 2]) {
             self.xGravity = accel_measurment[0];

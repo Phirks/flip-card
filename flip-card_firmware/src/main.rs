@@ -582,9 +582,9 @@ impl Screen {
 #[unsafe(link_section = ".bi_entries")]
 #[used]
 pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
-    embassy_rp::binary_info::rp_program_name!(c"Blinky Example"),
+    embassy_rp::binary_info::rp_program_name!(c"flip-card"),
     embassy_rp::binary_info::rp_program_description!(
-        c"This example tests the RP Pico on board LED, connected to gpio 25"
+        c"This is a business card that runs a fluid simulation on an LED grid"
     ),
     embassy_rp::binary_info::rp_cargo_version!(),
     embassy_rp::binary_info::rp_program_build_attribute!(),
@@ -645,6 +645,7 @@ async fn main(_spawner: Spawner) {
                 i2c,
                 accel_interrupt_1,
                 accel_interrupt_2,
+                enable_accel,
             ))
             .unwrap();
         spawner
@@ -663,7 +664,7 @@ async fn drive_screen(
     let tx = sm.tx();
     let mut frame_count: u128 = 0;
     FRAME_DATA_SIGNAL.wait().await;
-    watchdog.start(Duration::from_millis(50));
+    watchdog.start(Duration::from_millis(500));
     loop {
         Timer::after_millis(1).await;
         watchdog.feed();
@@ -679,7 +680,7 @@ async fn drive_screen(
         screen.make_output_2();
         tx.dma_push(dma_out_ref.reborrow(), &screen.out_array_2, false)
             .await;
-        if frame_count >= 1_000 {
+        if frame_count >= 30 {
             // flash.blocking_write(reset_count_location, &[10u8]);
             // embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
             Timer::after_millis(3000).await;
@@ -692,24 +693,32 @@ async fn monitor_accelerometer(
     mut i2c: I2c<'static, I2C1, i2c::Async>,
     mut int1: Input<'static>,
     mut int2: Input<'static>,
+    mut enable_accel: Output<'static>,
 ) {
     //setup accelerometer
     let addr: u8 = 0x18;
     let dt: f32 = 1.0 / 100.0; // 1/Hz,
     let accel_scale_max: f32 = 9.81 * 8.0; // m/s²
     let mut xh: [u8; 1] = [0];
-    i2c.write_read_async(addr, [0x31], &mut xh).await.unwrap(); // read accel data
+    i2c.blocking_write(addr, &[0x24, 0x08]).unwrap(); // CTRL_REG5, reboot chip
     i2c.blocking_write(addr, &[0x24, 0x80]).unwrap(); // CTRL_REG1, turn on, enable xyz
     Timer::after_millis(100).await;
-    i2c.blocking_write(addr, &[0x20, 0x57]).unwrap(); // CTRL_REG1, turn on, enable xyz
+    i2c.blocking_write(addr, &[0x20, 0x77]).unwrap(); // CTRL_REG1, turn on, enable xyz
     i2c.blocking_write(addr, &[0x21, 0x00]).unwrap(); // CTRL_REG2, high pass filter off
-    i2c.blocking_write(addr, &[0x22, 0x40]).unwrap(); // CTRL_REG3, int activity to INT1 pin
-    i2c.blocking_write(addr, &[0x23, 0x20]).unwrap(); // CTRL_REG4, FS = 2G
+    i2c.blocking_write(addr, &[0x22, 0x80]).unwrap(); // CTRL_REG3, click to INT1 pin
+    i2c.blocking_write(addr, &[0x23, 0x20]).unwrap(); // CTRL_REG4, FS = 8G
     // i2c.blocking_write(addr, &[0x24, 0x08]).unwrap(); // CTRL_REG5, latch INT pin 1
     i2c.blocking_write(addr, &[0x32, 0x0A]).unwrap(); // INT1_THS, Threshold = 250 mg
-    i2c.blocking_write(addr, &[0x33, 0x01]).unwrap(); // INT1_DURATION, Duration = 0
-    i2c.blocking_write(addr, &[0x30, 0x02]).unwrap(); // INT1_CFG, enable xh and yh interrupts
+    i2c.blocking_write(addr, &[0x33, 0x7F]).unwrap(); // INT1_DURATION, Duration = 0
+    i2c.blocking_write(addr, &[0x38, 0x22]).unwrap(); // CLICK_CFG
+    i2c.blocking_write(addr, &[0x39, 0x27]).unwrap(); // CLICK_SRC
+    i2c.blocking_write(addr, &[0x3A, 0x40]).unwrap(); // CLICK_THS
+    i2c.blocking_write(addr, &[0x3B, 0x20]).unwrap(); // TIME_LIMIT
+    i2c.blocking_write(addr, &[0x3C, 0x2F]).unwrap(); // TIME_LATENCY
+    i2c.blocking_write(addr, &[0x3D, 0x30]).unwrap(); // TIME WINDOW
+    // i2c.blocking_write(addr, &[0x30, 0x02]).unwrap(); // INT1_CFG, enable xh and yh interrupts
     // int1.wait_for_high().await;
+    enable_accel.set_low();
     let dormant_config = DormantWakeConfig {
         edge_high: false,
         edge_low: false,
@@ -721,6 +730,11 @@ async fn monitor_accelerometer(
     embassy_rp::clocks::dormant_sleep();
     drop(wake);
     drop(wake2);
+
+    enable_accel.set_high();
+    // i2c.blocking_write(addr, &[0x24, 0x80]).unwrap(); // CTRL_REG5, reboot chip
+    i2c.blocking_write(addr, &[0x20, 0x57]).unwrap(); // CTRL_REG1, turn on, enable xy
+    i2c.blocking_write(addr, &[0x23, 0x20]).unwrap(); // CTRL_REG1, turn on, enable xy
     //read accelerometer
     let mut yh: [u8; 1] = [0];
     let mut x_val: i8;
@@ -728,18 +742,25 @@ async fn monitor_accelerometer(
     let mut normalized_x_accel: f32;
     let mut normalized_y_accel: f32;
     let mut y_counter: usize = 0;
+    let mut frame_count = 0;
     loop {
-        Timer::after_millis(10).await;
+        Timer::after_millis(5).await;
+        // if frame_count > 14 {
+        //     embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
+        // } else {
+        //     frame_count += 1;
+        // }
         i2c.write_read_async(addr, [0x29], &mut xh).await.unwrap(); // read accel data
         i2c.write_read_async(addr, [0x2B], &mut yh).await.unwrap(); // read accel data
         x_val = xh[0] as i8;
         y_val = yh[0] as i8;
         normalized_x_accel = (0.7 * accel_scale_max * (x_val as f32) / 128.0) / dt;
         normalized_y_accel = (0.7 * accel_scale_max * (y_val as f32) / 128.0) / dt;
+
         if y_val > 10 {
             y_counter += 1;
-            if y_counter > 100 {
-                embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
+            if y_counter > 1000 {
+                // embassy_rp::rom_data::reboot(0x0002, 1, 0x00, 0x01); // reboot to BOOTSEL
                 Timer::after_millis(3000).await;
             }
         } else {
@@ -747,6 +768,7 @@ async fn monitor_accelerometer(
                 y_counter -= 1;
             }
         }
+
         ACCEL_DATA_SIGNAL.signal([normalized_x_accel, -normalized_y_accel]);
     }
 }
@@ -755,27 +777,33 @@ async fn monitor_accelerometer(
 async fn simulation_update() {
     let mut scene = Scene::setupScene(500);
     ACCEL_DATA_SIGNAL.wait().await;
-    FRAME_DATA_SIGNAL.signal([[false; 21]; 21]);
     let mut frame_count = 0;
-    scene.pause();
+    let mut miss_count = 0;
     let mut shake_count = 0;
     loop {
         if let First(accel_measurment) =
             select(ACCEL_DATA_SIGNAL.wait(), Timer::after_millis(10)).await
         {
+            miss_count = 0;
             scene.set_gravity(accel_measurment);
-            if scene.is_paused() && (accel_measurment[1] > 1000.0 || accel_measurment[1] < -1000.0)
-            {
+            if accel_measurment[1] > 1000.0 || accel_measurment[1] < -1000.0 {
                 shake_count += 100;
                 if shake_count > 400 {
-                    scene.unpause();
+                    scene.particle_add(500, 500);
                 }
             } else if shake_count > 0 {
                 shake_count -= 1;
             }
+        } else {
+            miss_count += 1
+        }
+        if frame_count > 1000 {
+            if frame_count % 10 == 0 {
+                scene.particle_add(-1, 500);
+            }
         }
 
-        if !scene.is_paused() && frame_count < 1000 {
+        if !scene.is_paused() && scene.get_num_particles() > 0 && miss_count < 10 {
             frame_count += 1;
             scene.simulate();
             FRAME_DATA_SIGNAL.signal(scene.get_output());
