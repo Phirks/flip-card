@@ -178,33 +178,28 @@ impl Screen {
     }
     fn post_process(&mut self) {
         let mut temp_yx_lock_grid = [[false; 21]; 21];
-        for i in 0..self.yx_grid.len() {
-            for j in 0..self.yx_grid[0].len() {
+        // First pass: populate temp_yx_lock_grid
+        for i in 0..21 {
+            for j in 0..21 {
                 if self.yx_grid[i][j] {
-                    if i == 20 || self.yx_grid[i + 1][j] {
-                        if i == 0 || self.yx_grid[i - 1][j] {
-                            if j == 20 || self.yx_grid[i][j + 1] {
-                                if j == 0 || self.yx_grid[i][j - 1] {
-                                    temp_yx_lock_grid[i][j] = true
-                                }
-                            }
-                        }
-                    }
+                    temp_yx_lock_grid[i][j] = 
+                        (i == 20 || self.yx_grid[i + 1][j]) &&
+                        (i == 0  || self.yx_grid[i - 1][j]) &&
+                        (j == 20 || self.yx_grid[i][j + 1]) &&
+                        (j == 0  || self.yx_grid[i][j - 1]);
                 }
             }
         }
-        for i in 0..self.yx_grid.len() {
-            for j in 0..self.yx_grid[0].len() {
+        
+        // Second pass: update yx_grid based on yx_lock_grid
+        for i in 0..21 {
+            for j in 0..21 {
                 if self.yx_lock_grid[i][j] {
-                    if i == 20 || self.yx_grid[i + 1][j] {
-                        if i == 0 || self.yx_grid[i - 1][j] {
-                            if j == 20 || self.yx_grid[i][j + 1] {
-                                if j == 0 || self.yx_grid[i][j - 1] {
-                                    self.yx_grid[i][j] = true;
-                                }
-                            }
-                        }
-                    }
+                    self.yx_grid[i][j] = 
+                        (i == 20 || self.yx_grid[i + 1][j]) &&
+                        (i == 0  || self.yx_grid[i - 1][j]) &&
+                        (j == 20 || self.yx_grid[i][j + 1]) &&
+                        (j == 0  || self.yx_grid[i][j - 1]);
                 }
             }
         }
